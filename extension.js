@@ -12,7 +12,7 @@ import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 const CONFIG = {
     popupWidth: 400,
     popupHeight: 300,
-    iconSize: 48
+    iconSize: 56
 };
 
 const CalloutArrow = GObject.registerClass(
@@ -365,7 +365,7 @@ export default class DashStacksExtension extends Extension {
     }
 
     _injectStacks() {
-        // Clear any existing injected buttons
+        // Clear any existing injected buttons and separators
         this._buttons.forEach(b => {
             if (b.popup) b._closePopup();
             b.destroy();
@@ -373,6 +373,17 @@ export default class DashStacksExtension extends Extension {
         this._buttons = [];
         
         const stacks = this._getStacksConfig();
+        
+        // don't bother if there's nothing to show
+        if (stacks.length === 0) return;
+
+        // Create and inject the separator
+        let separator = new St.Widget({ 
+            style_class: 'dash-stacks-separator',
+            y_align: Clutter.ActorAlign.CENTER 
+        });
+        this._buttons.push(separator); // track it so we can destroy it on disable/reload
+        Main.overview.dash._box.add_child(separator);
         
         stacks.forEach(stack => {
             let btn = new StackButton(stack);
