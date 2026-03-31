@@ -519,6 +519,7 @@ const StackButton = GObject.registerClass(
         y_align: Clutter.ActorAlign.FILL,
         opacity: 0, // hide via opacity so shell layout doesn't drop it
       });
+      this.downloadOverlay.set_pivot_point(0.5, 0.5);
 
       this.dlIcon = new St.Icon({
         icon_name: 'folder-download-symbolic',
@@ -595,56 +596,133 @@ const StackButton = GObject.registerClass(
       });
     }
 
-    _checkDownloads(path) {
-      if (this._scanTimeoutId) return; 
-      
-      this._scanTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
-        try {
-          let dir = Gio.File.new_for_path(path);
-          let enumerator = dir.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
-          let isDownloading = false;
-          
-          let fileInfo;
-          while ((fileInfo = enumerator.next_file(null)) !== null) {
-            let name = fileInfo.get_name();
-            if (name.endsWith('.part') || name.endsWith('.crdownload') || name.includes('.goutputstream')) {
-              isDownloading = true;
-              break;
-            }
-          }
-          enumerator.close(null);
-
-          if (isDownloading && this.downloadOverlay.opacity === 0) {
-            this.downloadOverlay.ease({
-              opacity: 255,
-              duration: 200,
-              mode: Clutter.AnimationMode.EASE_OUT_QUAD
-            });
-            // dim the main icon
-            this.mainIcon.ease({
-              opacity: 100, // adjust 0-255 for how dark you want it
-              duration: 200,
-              mode: Clutter.AnimationMode.EASE_OUT_QUAD
-            });
-          } else if (!isDownloading && this.downloadOverlay.opacity === 255) {
-            this.downloadOverlay.ease({
-              opacity: 0,
-              duration: 200,
-              mode: Clutter.AnimationMode.EASE_OUT_QUAD
-            });
-            // restore the main icon
-            this.mainIcon.ease({
-              opacity: 255,
-              duration: 200,
-              mode: Clutter.AnimationMode.EASE_OUT_QUAD
-            });
-          }
-        } catch (e) {}
+   _checkDownloads(path) {
+    if (this._scanTimeoutId) return; 
+    
+    this._scanTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+      try {
+        let dir = Gio.File.new_for_path(path);
+        let enumerator = dir.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
+        let isDownloading = false;
         
-        this._scanTimeoutId = null;
-        return GLib.SOURCE_REMOVE;
+        let fileInfo;
+        while ((fileInfo = enumerator.next_file(null)) !== null) {
+          let name = fileInfo.get_name();
+          if (name.endsWith('.part') || name.endsWith('.crdownload') || name.includes('.goutputstream')) {
+            isDownloading = true;
+            break;
+          }
+        }
+        enumerator.close(null);
+
+        if (isDownloading && this.downloadOverlay.opacity === 0) {
+          // set initial big scale before easing to normal size
+          this.downloadOverlay.set_scale(1.5, 1.5);
+          this.downloadOverlay.ease({
+            opacity: 255,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            duration: 200,
+            mode: Clutter.AnimationMode.EASE_OUT_QUAD
+          });
+          
+          this.mainIcon.ease({
+            opacity: 100, 
+            duration: 200,
+            mode: Clutter.AnimationMode.EASE_OUT_QUAD
+          });
+
+          this._triggerJumpIndicator(true);
+
+        } else if (!isDownloading && this.downloadOverlay.opacity === 255) {
+          // ease back up to 1.5 while fading out
+          this.downloadOverlay.ease({
+            opacity: 0,
+            scale_x: 1.5,
+            scale_y: 1.5,
+            duration: 200,
+            mode: Clutter.AnimationMode.EASE_OUT_QUAD
+          });
+          
+          this.mainIcon.ease({
+            opacity: 255,
+            duration: 200,
+            mode: Clutter.AnimationMode.EASE_OUT_QUAD
+          });
+
+          this._triggerJumpIndicator(false);
+        }
+      } catch (e) {}
+      
+      this._scanTimeoutId = null;
+      return GLib.SOURCE_REMOVE;
+    });
+  }
+
+  _triggerJumpIndicator(isStarting) {
+    if (Main.overview.visible) return;
+
+    // grab the exact coordinates and size of the button on the dock
+    let [startX, startY] = this.get_transformed_position();
+    let [width, height] = this.get_transformed_size();
+
+    // fallback sizes just in case the layout manager is being weird
+    let w = width > 0 ? width : 64;
+    let h = height > 0 ? height : 64;
+
+    // build a fake clone of your stack button
+    let clone = new St.Widget({
+      layout_manager: new Clutter.BinLayout(),
+      width: w,
+      height: h,
+    });
+
+    let mainClone = new St.Icon({
+      icon_name: this.config.icon,
+      icon_size: 64,
+      x_align: Clutter.ActorAlign.CENTER,
+      y_align: Clutter.ActorAlign.CENTER,
+      opacity: isStarting ? 100 : 255, // dim it if downloading
+    });
+
+    clone.add_child(mainClone);
+
+    // slap the download overlay on the clone if a download just started
+    if (isStarting) {
+      let dlClone = new St.Icon({
+        icon_name: 'folder-download-symbolic',
+        icon_size: 32,
+        x_align: Clutter.ActorAlign.CENTER,
+        y_align: Clutter.ActorAlign.CENTER,
       });
+      let overlayClone = new St.Bin({
+        style_class: "stack-overlay",
+        child: dlClone,
+        x_align: Clutter.ActorAlign.FILL,
+        y_align: Clutter.ActorAlign.FILL,
+      });
+      clone.add_child(overlayClone);
     }
+
+    Main.uiGroup.add_child(clone);
+    clone.set_position(startX, startY);
+
+    // bounce animation: shoot up, then drop back down and fade out
+    clone.ease({
+      y: startY - 75, // how high it jumps
+      duration: 300,
+      mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+      onComplete: () => {
+        clone.ease({
+          y: startY,
+          opacity: 0,
+          duration: 400,
+          mode: Clutter.AnimationMode.EASE_IN_QUAD,
+          onComplete: () => clone.destroy()
+        });
+      }
+    });
+  }
 
     _createHeader(title) {
       let item = new PopupMenu.PopupBaseMenuItem({
