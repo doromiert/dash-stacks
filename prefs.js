@@ -8,15 +8,13 @@ export default class DashStacksPreferences extends ExtensionPreferences {
         const page = new Adw.PreferencesPage();
         window.add(page);
 
-        let group = null; // Track the active group
+        let group = null; 
 
         const renderList = () => {
-            // 1. Remove the entire old group if it exists
             if (group) {
                 page.remove(group);
             }
 
-            // 2. Create a fresh group
             group = new Adw.PreferencesGroup({
                 title: 'Stacks Configuration',
                 description: 'Manage your dash folder stacks.'
@@ -60,7 +58,7 @@ export default class DashStacksPreferences extends ExtensionPreferences {
                 deleteBtn.connect('clicked', () => {
                     stacks.splice(index, 1);
                     save(stacks);
-                    renderList(); // Re-render will now cleanly wipe and rebuild
+                    renderList(); 
                 });
 
                 row.add_row(nameEntry);
@@ -70,13 +68,12 @@ export default class DashStacksPreferences extends ExtensionPreferences {
                 group.add(row);
             });
 
-            // "Add New" button
             let addRow = new Adw.ActionRow({ title: 'Add New Stack' });
             let addBtn = new Gtk.Button({ icon_name: 'list-add-symbolic', valign: Gtk.Align.CENTER });
             addBtn.connect('clicked', () => {
                 stacks.push({ name: 'New Stack', path: '~/', icon: 'folder' });
                 save(stacks);
-                renderList(); // Re-render will now cleanly wipe and rebuild
+                renderList(); 
             });
             addRow.add_suffix(addBtn);
             group.add(addRow);

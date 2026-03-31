@@ -1,11 +1,11 @@
 {
   "name": "Dash Stacks",
   "description": "macos style folder stacks in the dash.",
-  "uuid": "dash-stacks@doromiert.neg-zero.com",
+  "uuid": "dash-stacks@neg-zero.com",
   "shell-version": [
     "49",
     "48"
   ],
-  "url": "https://neg-zero.com",
+  "url": "https://github.com/doromiert/dash-stacks",
   "settings-schema": "org.gnome.shell.extensions.dash-stacks"
 }

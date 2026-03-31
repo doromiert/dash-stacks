@@ -1,56 +1,50 @@
-/* kill the ghost background and shadow from the shell's box-pointer */
 .dash-stacks-context-menu {
-    background-color: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
+  background-color: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
 }
 
-/* style the actual inner box where the items live */
 .dash-stacks-context-menu .popup-menu-content {
-      background-color: #36363a !important;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 20px;
-    /* padding: 8px; */
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  background-color: #36363a !important;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
-/* fix the menu item background bleed */
 .dash-stacks-context-menu .popup-menu-item {
-    background-color: transparent !important;
-    border-radius: 12px;
+  background-color: transparent !important;
+  border-radius: 12px;
 }
 
 .dash-stacks-context-menu .popup-menu-item:hover {
-    color: #ff7b72 !important;
+  color: #ff7b72 !important;
 }
 
 .menu-label {
-    font-size: 9pt;
-    opacity: 0.6;
-    margin-bottom: 4px;
-    margin-left: 4px;
+  font-size: 9pt;
+  opacity: 0.6;
+  margin-bottom: 4px;
+  margin-left: 4px;
 }
 
-/* make entries fill the menu width */
 .menu-entry {
-    background-color: rgba(255, 255, 255, 0.08) !important;
-    border-radius: 12px;
-    color: white;
-    border: 1px solid transparent;
-    min-width: 200px; /* base width */
-    /* width: 100%; */
+  background-color: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 12px;
+  color: white;
+  border: 1px solid transparent;
+  min-width: 200px; 
 }
 
 .menu-entry:focus {
-    background-color: rgba(255, 255, 255, 0.12) !important;
+  background-color: rgba(255, 255, 255, 0.12) !important;
 }
 
 .destruct-button {
-    color: #ff7b72 !important;
+  color: #ff7b72 !important;
 }
 
 .destruct-button:hover {
-    background-color: rgba(248, 81, 73, 0.15) !important;
+  background-color: rgba(248, 81, 73, 0.15) !important;
 }
 
 .dash-stacks-separator {
@@ -141,26 +135,22 @@
   width: 68px;
 }
 
-/* 1. Force the wrapper itself to be strictly 96px tall */
 .dash-scroll-wrapper {
   height: 96px !important;
-   /* padding-left: 10px; */
-  /* padding-bottom: 8px;  */
+
 }
 
-/* 2. Force GNOME's internal dash._box (the direct child) to inherit that exact height */
 .dash-scroll-wrapper > * {
   height: 96px !important;
 }
 
-/* 3. Push the running dot out of the way */
 .dash-scroll-wrapper .app-grid-running-dot {
   bottom: -10px;
 }
 
 .dash-scroll-view {
-    background-color: transparent;
-    -st-hscrollbar-style: never;
+  background-color: transparent;
+  -st-hscrollbar-style: never;
 }
 
 .dash-scroll-view StScrollBar {
@@ -170,7 +160,6 @@
   -st-background-image: none;
 }
 
-/* gnome 45+ often requires targeting the scrollbar bin specifically */
 .dash-scroll-view > StScrollBar {
   min-width: 0px;
   min-height: 0px;
@@ -178,18 +167,15 @@
   height: 0px;
 }
 
-/* --- CUSTOM DASH LAYOUT TUNING --- */
 
-/* The outer container holding an app icon */
 .dash-custom-app-container {
   width: 76px !important;
 }
 
-/* The actual clickable app button inside */
 .dash-custom-app-child {
   width: 76px !important;
-  height: 76px !important; /* Force perfect squares */
-  margin: 0 !important; /* Kill GNOME's invisible padding */
+  height: 76px !important; 
+  margin: 0 !important; 
   padding: 0 !important;
 }
 
@@ -197,12 +183,9 @@
 .dash-custom-sep-container,
 .dash-custom-sep-child {
   width: 1px !important;
-  /* You can tweak these live now if the totalWidth math gets slightly off */
-  /* margin-left: 6px !important; */
-  /* margin-right: 6px !important; */
+  
 }
 
-/* Ensure the ghost spacer STAYS dead */
 .dash-custom-ghost-spacer {
   width: 0px !important;
   margin: 0px !important;

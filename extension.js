@@ -1,4 +1,3 @@
-import Cairo from "gi://cairo";
 import * as DND from "resource:///org/gnome/shell/ui/dnd.js";
 import Clutter from "gi://Clutter";
 import Gio from "gi://Gio";
@@ -7,7 +6,6 @@ import GObject from "gi://GObject";
 import Pango from "gi://Pango";
 import St from "gi://St";
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
-import * as Dash from "resource:///org/gnome/shell/ui/dash.js";
 import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
 
@@ -18,7 +16,6 @@ const CONFIG = {
   tooltipDelay: 500, // ms
 };
 
-// --- TOOLTIP ---
 const StackTooltip = GObject.registerClass(
   class StackTooltip extends St.Label {
     _init(text) {
@@ -240,7 +237,7 @@ const StackPopup = GObject.registerClass(
           icon_name: "folder-open-symbolic",
           icon_size: 16,
         }),
-        style_class: "stack-nautilus-button", // you can style this in stylesheet.css
+        style_class: "stack-nautilus-button", 
         reactive: true,
         x_align: Clutter.ActorAlign.CENTER,
         y_align: Clutter.ActorAlign.CENTER,
@@ -250,7 +247,6 @@ const StackPopup = GObject.registerClass(
         let current = this.history[this.history.length - 1];
         Gio.AppInfo.launch_default_for_uri("file://" + current.path, null);
 
-        // optional: close everything so you actually see the window
         this.sourceActor._closePopup();
         Main.overview.hide();
       });
@@ -269,7 +265,6 @@ const StackPopup = GObject.registerClass(
         y_expand: true,
       });
 
-      // Manual Touch Scrolling with Momentum
       let touchStartY = null;
       let lastTouchY = null;
       let lastTouchTime = null;
@@ -280,7 +275,6 @@ const StackPopup = GObject.registerClass(
         let type = event.type();
 
         if (type === Clutter.EventType.TOUCH_BEGIN) {
-          // Stop any ongoing momentum glide if user touches screen again
           this.scroll.vadjustment.remove_transition("value");
 
           let [x, y] = event.get_coords();
@@ -298,15 +292,14 @@ const StackPopup = GObject.registerClass(
           let [x, y] = event.get_coords();
           let dy = lastTouchY - y;
           let now = Date.now();
-          let dt = now - lastTouchTime; // Time since last frame
+          let timeSinceLastFrame = now - lastTouchTime; 
 
           if (!isDragging && Math.abs(touchStartY - y) > 10) {
             isDragging = true;
           }
 
           if (isDragging) {
-            // Calculate pixels per millisecond
-            if (dt > 0) velocity = dy / dt;
+            if (timeSinceLastFrame > 0) velocity = dy / timeSinceLastFrame;
 
             this.scroll.vadjustment.value += dy;
             lastTouchY = y;
@@ -324,19 +317,16 @@ const StackPopup = GObject.registerClass(
           if (isDragging) {
             isDragging = false;
 
-            // If the flick was fast enough (> 0.5px/ms), apply momentum
             if (Math.abs(velocity) > 0.5) {
               let amplitude = velocity * 400; // How far it glides
               let targetValue = this.scroll.vadjustment.value + amplitude;
 
-              // Clamp to prevent scrolling past the top/bottom edges
               let lower = this.scroll.vadjustment.lower;
               let upper =
                 this.scroll.vadjustment.upper -
                 this.scroll.vadjustment.page_size;
               targetValue = Math.max(lower, Math.min(targetValue, upper));
 
-              // Animate the glide
               this.scroll.vadjustment.ease(targetValue, {
                 mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
                 duration: 800, // ms
@@ -431,7 +421,6 @@ const StackPopup = GObject.registerClass(
 const StackButton = GObject.registerClass(
   class StackButton extends St.Button {
     _init(stackConfig, settings, index) {
-      // <--- added settings and index here
       super._init({
         style_class: "dash-stack-button dash-item-container",
         reactive: true,
@@ -475,7 +464,6 @@ const StackButton = GObject.registerClass(
         }
       });
 
-      // Context Menu
       this._menuManager = new PopupMenu.PopupMenuManager(this);
       this._menu = new PopupMenu.PopupMenu(this, 0.5, St.Side.BOTTOM);
       this._menu.actor.add_style_class_name("dash-stacks-context-menu");
@@ -502,7 +490,6 @@ const StackButton = GObject.registerClass(
     _buildMenu() {
       this._menu.removeAll();
 
-      // Rename
       let nameItem = new PopupMenu.PopupBaseMenuItem({
         reactive: false,
         can_focus: false,
@@ -525,12 +512,11 @@ const StackButton = GObject.registerClass(
       nameItem.add_child(nameBox);
       this._menu.addMenuItem(nameItem);
 
-      // Icon
       let iconItem = new PopupMenu.PopupBaseMenuItem({
         reactive: false,
         can_focus: false,
       });
-      iconItem.actor.x_expand = true; // force the menu item to expand
+      iconItem.actor.x_expand = true; 
       let iconBox = new St.BoxLayout({ vertical: true, x_expand: true });
       iconBox.add_child(
         new St.Label({ text: "Rename", style_class: "menu-label" }),
@@ -690,8 +676,6 @@ export default class DashStacksExtension extends Extension {
     dash._redisplay = () => {
       this._originalRedisplay.call(dash);
       this._injectStacks();
-      // After redisplay, we need to ensure the Show Apps button is
-      // still in our master layout and not back in the original box.
       if (
         this.masterLayout &&
         dash.showAppsButton.get_parent() !== this.masterLayout
@@ -719,7 +703,6 @@ export default class DashStacksExtension extends Extension {
 
       if (this.dashScroll) return GLib.SOURCE_REMOVE;
 
-      // 1. CREATE THE MASTER WRAPPER (This holds everything)
       this.masterLayout = new St.BoxLayout({
         style_class: "dash-scroll-master",
         vertical: false,
@@ -728,10 +711,9 @@ export default class DashStacksExtension extends Extension {
         reactive: true,
       });
 
-      // 2. CREATE THE SCROLL VIEW (For the icons only)
       this.dashScroll = new St.ScrollView({
         style_class: "dash-scroll-view",
-        hscrollbar_policy: St.PolicyType.EXTERNAL, // Hidden but scrollable
+        hscrollbar_policy: St.PolicyType.EXTERNAL, 
         vscrollbar_policy: St.PolicyType.NEVER,
         overlay_scrollbars: true,
         enable_mouse_scrolling: true,
@@ -740,7 +722,6 @@ export default class DashStacksExtension extends Extension {
         height: 96,
       });
 
-      // 3. CREATE THE INTERNAL WRAPPER
       this.dashWrapper = new St.BoxLayout({
         style_class: "dash-scroll-wrapper",
         vertical: false,
@@ -752,7 +733,6 @@ export default class DashStacksExtension extends Extension {
       this.dashScroll.reactive = true;
       this.dashWrapper.reactive = true;
 
-      // --- INPUT HIJACKER (Mouse + Touch) ---
       let dashTouchStartX = null;
       let dashLastTouchX = null;
       let dashIsDragging = false;
@@ -816,25 +796,18 @@ export default class DashStacksExtension extends Extension {
         return Clutter.EVENT_PROPAGATE;
       });
 
-      // --- THE SURGERY ---
-
-      // A. Pull the All Apps button out of the dash box
       let showApps = dash.showAppsButton;
       dashBox.remove_child(showApps);
 
-      // B. Re-nest the dash box into the scroll view
       dashParent.remove_child(dashBox);
       this.dashWrapper.add_child(dashBox);
       this.dashScroll.set_child(this.dashWrapper);
 
-      // C. Build the master layout: [ Scrollable Icons | All Apps Button ]
       this.masterLayout.add_child(this.dashScroll);
       this.masterLayout.add_child(showApps);
 
-      // D. Put it all back into the dash
       dashParent.insert_child_at_index(this.masterLayout, 0);
 
-      // E. Update width based on monitor
       this._updateMaxWidth = () => {
         let monitor = Main.layoutManager.currentMonitor;
         // Padding: 76*2 (edges) + 80 (approx space for All Apps button)
@@ -953,7 +926,6 @@ export default class DashStacksExtension extends Extension {
   }
 
   disable() {
-    // 1. disconnect the monitor listener (important!)
     if (this._monitorsChangedId) {
       Main.layoutManager.disconnect(this._monitorsChangedId);
       this._monitorsChangedId = null;
@@ -983,10 +955,8 @@ export default class DashStacksExtension extends Extension {
       let dashParent = this.masterLayout.get_parent();
 
       if (dashParent) {
-        // 2. return the children to their original home
         this.dashWrapper.remove_child(dash._box);
 
-        // 3. PUT THE ALL APPS BUTTON BACK
         this.masterLayout.remove_child(dash.showAppsButton);
         dash._box.add_child(dash.showAppsButton);
 
@@ -994,7 +964,7 @@ export default class DashStacksExtension extends Extension {
         dashParent.remove_child(this.masterLayout);
       }
 
-      dash._box.set_width(-1); // reset to auto-width
+      dash._box.set_width(-1); 
 
       this.dashWrapper.destroy();
       this.dashScroll.destroy();
