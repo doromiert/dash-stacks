@@ -624,12 +624,11 @@ export default class DashStacksExtension extends Extension {
                     child.x_expand = false;
                     
                     if (isSepC || isSepChild) {
-                        // 1. Separators: Container gets 13px (1px + 6px left + 6px right)
                         c.set_width(1); 
                         child.set_width(1);
                         child.set_margin_left(6);
                         child.set_margin_right(6);
-                        totalWidth += 1;
+                        totalWidth += 13;
                     } else {
                         // 2. Standard Apps/Stacks
                         c.set_width(76);
@@ -639,7 +638,7 @@ export default class DashStacksExtension extends Extension {
                     // No child found
                     if (isSepC) {
                         // Empty separator container
-                        c.set_width(13);
+                        c.set_width(1);
                         totalWidth += 13;
                     } else {
                         // 3. The invisible ghost spacer GNOME injects - Kill it
