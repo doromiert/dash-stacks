@@ -74,3 +74,23 @@
     margin-top: 4px;
     width: 68px;
 }
+
+/* 1. Force the wrapper itself to be strictly 96px tall */
+.dash-scroll-wrapper {
+    height: 96px !important; 
+    /* padding-bottom: 8px;  */
+}
+
+/* 2. Force GNOME's internal dash._box (the direct child) to inherit that exact height */
+.dash-scroll-wrapper > * {
+    height: 96px !important;
+}
+
+/* 3. Push the running dot out of the way */
+.dash-scroll-wrapper .app-grid-running-dot {
+    bottom: -10px; 
+}
+
+.dash-scroll-view StScrollBar {
+    opacity: 0;
+}

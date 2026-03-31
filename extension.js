@@ -454,57 +454,209 @@ class StackButton extends St.Button {
 });
 
 export default class DashStacksExtension extends Extension {
-    enable() {
+  enable() {
         this._settings = this.getSettings();
         this._settingsSignal = this._settings.connect('changed::stacks', () => {
             this._injectStacks();
         });
 
         this._buttons = [];
-        this._originalRedisplay = Main.overview.dash._redisplay;
+        this._boxSignals = []; // Array to track our new signals
         
-        Main.overview.dash._redisplay = () => {
-            this._originalRedisplay.call(Main.overview.dash);
+        let dash = Main.overview.dash;
+
+        this._originalRedisplay = dash._redisplay;
+        this._overviewHidingId = Main.overview.connect('hiding', () => {
+            this._buttons.forEach(btn => {
+                if (btn.popup) btn._closePopup();
+            });
+        });
+        
+        // We still hijack redisplay to inject your custom folders...
+        dash._redisplay = () => {
+            this._originalRedisplay.call(dash);
             this._injectStacks();
         };
+
+        // ...But we trigger the Golden Snippet whenever the amount of items ACTUALLY updates!
+        if (dash._box) {
+            // Updated for GNOME 46+: 'actor-added' is now 'child-added'
+            this._boxSignals.push(dash._box.connect('child-added', () => this._enforceLayout()));
+            this._boxSignals.push(dash._box.connect('child-removed', () => this._enforceLayout()));
+        }
         
         this._injectStacks();
 
-        // // --- DASH SCROLL INJECTION ---
-        // let dash = Main.overview.dash;
-        // let dashParent = dash._box.get_parent();
+      // --- DASH SCROLL INJECTION ---
+        GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            let dash = Main.overview.dash;
+            let dashParent = dash._box.get_parent();
 
-        // this.dashScroll = new St.ScrollView({
-        //     hscrollbar_policy: St.PolicyType.AUTOMATIC,
-        //     vscrollbar_policy: St.PolicyType.NEVER,
-        //     enable_mouse_scrolling: true,
-        //     overlay_scrollbars: true,
-        //     x_expand: true,
-        //     y_expand: true
-        // });
+            if (this.dashScroll) return GLib.SOURCE_REMOVE;
 
-        // let maxWidth = global.stage.width - (76 * 2);
-        // this.dashScroll.style = `max-width: ${maxWidth}px;`;
+            this.dashScroll = new St.ScrollView({
+                style_class: 'dash-scroll-view',
+                hscrollbar_policy: St.PolicyType.AUTOMATIC,
+                vscrollbar_policy: St.PolicyType.NEVER,
+                overlay_scrollbars: true, 
+                enable_mouse_scrolling: true,
+                x_expand: true,
+                y_expand: false,
+                height: 96
+            });
 
-        // // THE ALLOCATION FIX: Save original states so we can revert them cleanly
-        // this._originalBoxState = {
-        //     x_expand: dash._box.x_expand,
-        //     y_expand: dash._box.y_expand,
-        //     x_align: dash._box.x_align,
-        //     y_align: dash._box.y_align
-        // };
+            let maxWidth = global.stage.width - (76 * 2);
+            this.dashScroll.style = `max-width: ${maxWidth}px;`;
 
-        // // Force GNOME's _box to completely fill the ScrollView so it doesn't collapse to 0x0
-        // dash._box.x_expand = true;
-        // dash._box.y_expand = true;
-        // dash._box.x_align = Clutter.ActorAlign.FILL;
-        // dash._box.y_align = Clutter.ActorAlign.FILL;
+            this.dashWrapper = new St.BoxLayout({
+                style_class: 'dash-scroll-wrapper',
+                vertical: false,
+                x_expand: false,
+                y_expand: true,
+                height: 96
+            });
 
-        // // Perform the surgery
-        // dashParent.remove_child(dash._box);
-        // this.dashScroll.add_child(dash._box);
-        // dashParent.insert_child_at_index(this.dashScroll, 0);
+            // 1. Force the containers to accept input
+            this.dashScroll.reactive = true;
+            this.dashWrapper.reactive = true;
+
+            // 2. THE MASTER INPUT HIJACKER (Mouse + Touch)
+            let dashTouchStartX = null;
+            let dashLastTouchX = null;
+            let dashIsDragging = false;
+
+            this.dashScroll.connect('captured-event', (actor, event) => {
+                let type = event.type();
+                let adj = this.dashScroll.hadjustment;
+
+                // --- MOUSE WHEEL ---
+                if (type === Clutter.EventType.SCROLL) {
+                    let direction = event.get_scroll_direction();
+                    let scrollAmount = 76; // one icon width
+
+                    if (direction === Clutter.ScrollDirection.SMOOTH) {
+                        let [dx, dy] = event.get_scroll_delta();
+                        // Handle touchpads that map vertical two-finger to horizontal
+                        let delta = Math.abs(dx) > Math.abs(dy) ? dx : dy;
+                        adj.value += (delta * 30);
+                    } else if (direction === Clutter.ScrollDirection.UP || direction === Clutter.ScrollDirection.LEFT) {
+                        adj.value -= scrollAmount;
+                    } else if (direction === Clutter.ScrollDirection.DOWN || direction === Clutter.ScrollDirection.RIGHT) {
+                        adj.value += scrollAmount;
+                    }
+                    
+                    // Kill the event so GNOME doesn't switch workspaces
+                    return Clutter.EVENT_STOP; 
+                }
+
+                // --- TOUCH SCREEN SWIPE ---
+                if (type === Clutter.EventType.TOUCH_BEGIN) {
+                    let [x, y] = event.get_coords();
+                    dashTouchStartX = x;
+                    dashLastTouchX = x;
+                    dashIsDragging = false;
+                    return Clutter.EVENT_PROPAGATE;
+                }
+
+                if (type === Clutter.EventType.TOUCH_UPDATE) {
+                    if (dashTouchStartX === null) return Clutter.EVENT_PROPAGATE;
+                    let [x, y] = event.get_coords();
+                    let dx = dashLastTouchX - x;
+
+                    // 10px threshold: diff between a clumsy tap and a swipe
+                    if (!dashIsDragging && Math.abs(dashTouchStartX - x) > 10) {
+                        dashIsDragging = true;
+                    }
+
+                    if (dashIsDragging) {
+                        adj.value += dx;
+                        dashLastTouchX = x;
+                        return Clutter.EVENT_STOP; // Stop buttons from opening while swiping
+                    }
+                }
+
+                if (type === Clutter.EventType.TOUCH_END || type === Clutter.EventType.TOUCH_CANCEL) {
+                    dashTouchStartX = null;
+                    if (dashIsDragging) {
+                        dashIsDragging = false;
+                        return Clutter.EVENT_STOP; // Stop ghost clicks on release
+                    }
+                }
+
+                return Clutter.EVENT_PROPAGATE;
+            });
+
+            // Surgery
+            dashParent.remove_child(dash._box);
+            this.dashWrapper.add_child(dash._box);
+            this.dashScroll.add_child(this.dashWrapper);
+            dashParent.insert_child_at_index(this.dashScroll, 0);
+
+            return GLib.SOURCE_REMOVE;
+        });
     }
+
+    _enforceLayout() {
+        // If an update is already queued, cancel it so we don't run 50 times at once
+        if (this._enforceTimeoutId) {
+            GLib.source_remove(this._enforceTimeoutId);
+        }
+        
+        // Wait 50ms for GNOME to completely finish adding/removing icons and doing its math
+        this._enforceTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
+            let dash = Main.overview.dash;
+            if (!this.dashWrapper || !dash._box) {
+                this._enforceTimeoutId = null;
+                return GLib.SOURCE_REMOVE;
+            }
+
+            let totalWidth = 0;
+            dash._box.layout_manager.spacing = 0;
+
+            dash._box.get_children().forEach(c => {
+                c.x_expand = false;
+                
+                let isSepC = c.style_class && c.style_class.includes('separator');
+                let child = c.get_first_child ? c.get_first_child() : null;
+                let isSepChild = child && child.style_class && child.style_class.includes('separator');
+
+                if (child) {
+                    child.x_expand = false;
+                    
+                    if (isSepC || isSepChild) {
+                        // 1. Separators: Container gets 13px (1px + 6px left + 6px right)
+                        c.set_width(1); 
+                        child.set_width(1);
+                        child.set_margin_left(6);
+                        child.set_margin_right(6);
+                        totalWidth += 1;
+                    } else {
+                        // 2. Standard Apps/Stacks
+                        c.set_width(76);
+                        totalWidth += 76;
+                    }
+                } else {
+                    // No child found
+                    if (isSepC) {
+                        // Empty separator container
+                        c.set_width(13);
+                        totalWidth += 13;
+                    } else {
+                        // 3. The invisible ghost spacer GNOME injects - Kill it
+                        c.set_width(0);
+                    }
+                }
+            });
+
+            // Force the exact widths so the ScrollView math works perfectly
+            dash._box.set_width(totalWidth);
+            this.dashWrapper.set_width(totalWidth);
+
+            this._enforceTimeoutId = null;
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
 
     _getStacksConfig() {
         try {
@@ -524,6 +676,7 @@ export default class DashStacksExtension extends Extension {
             return [];
         }
     }
+
 
     _injectStacks() {
         // Clear any existing injected buttons and separators
@@ -554,45 +707,71 @@ export default class DashStacksExtension extends Extension {
     }
 
     disable() {
+        // 1. Settings cleanup
         if (this._settingsSignal) {
             this._settings.disconnect(this._settingsSignal);
             this._settingsSignal = null;
         }
         this._settings = null;
 
+        // 2. Overview and Redisplay cleanup
         if (this._originalRedisplay) {
             Main.overview.dash._redisplay = this._originalRedisplay;
             this._originalRedisplay = null;
         }
+        if (this._overviewHidingId) {
+            Main.overview.disconnect(this._overviewHidingId);
+            this._overviewHidingId = null;
+        }
 
+        // 3. Folder/Button cleanup
         this._buttons.forEach(btn => {
             if (btn.popup) btn._closePopup();
             btn.destroy();
         });
         this._buttons = [];
 
-        // --- DASH SCROLL REVERT ---
-        // if (this.dashScroll) {
-        //     let dash = Main.overview.dash;
-        //     let dashParent = this.dashScroll.get_parent();
+        // 4. NEW: Cleanup the Layout Enforcer signals and timer
+        if (this._boxSignals) {
+            let dash = Main.overview.dash;
+            if (dash && dash._box) {
+                this._boxSignals.forEach(id => dash._box.disconnect(id));
+            }
+            this._boxSignals = [];
+        }
+        if (this._enforceTimeoutId) {
+            GLib.source_remove(this._enforceTimeoutId);
+            this._enforceTimeoutId = null;
+        }
 
-        //     if (dashParent) {
-        //         this.dashScroll.remove_child(dash._box);
-        //         dashParent.remove_child(this.dashScroll);
-                
-        //         // Revert the allocation states back to GNOME defaults
-        //         if (this._originalBoxState) {
-        //             dash._box.x_expand = this._originalBoxState.x_expand;
-        //             dash._box.y_expand = this._originalBoxState.y_expand;
-        //             dash._box.x_align = this._originalBoxState.x_align;
-        //             dash._box.y_align = this._originalBoxState.y_align;
-        //         }
-                
-        //         dashParent.insert_child_at_index(dash._box, 0);
-        //     }
+        // 5. Scroll Surgery Reversal
+        if (this.dashScroll) {
+            let dash = Main.overview.dash;
+            let dashParent = this.dashScroll.get_parent();
 
-        //     this.dashScroll.destroy();
-        //     this.dashScroll = null;
-        // }
+            if (dashParent) {
+                // Remove box from our wrapper
+                this.dashWrapper.remove_child(dash._box);
+                // Remove scrollview from dash
+                dashParent.remove_child(this.dashScroll);
+                
+                // Restore original vertical states so the dock doesn't look weird
+                if (this._originalBoxYExpand !== undefined) {
+                    dash._box.y_expand = this._originalBoxYExpand;
+                    dash._box.y_align = this._originalBoxYAlign;
+                }
+                
+                // Reset hardcoded widths so GNOME can take over again
+                dash._box.set_width(-1); 
+                
+                // Put it back where it belongs
+                dashParent.insert_child_at_index(dash._box, 0);
+            }
+
+            this.dashWrapper.destroy();
+            this.dashWrapper = null;
+            this.dashScroll.destroy();
+            this.dashScroll = null;
+        }
     }
 }
