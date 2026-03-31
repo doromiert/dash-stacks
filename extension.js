@@ -438,7 +438,7 @@ const StackButton = GObject.registerClass(
       this.set_child(
         new St.Icon({
           icon_name: stackConfig.icon,
-          icon_size: 56,
+          icon_size: 64,
         }),
       );
 
