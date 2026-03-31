@@ -9,7 +9,7 @@ import * as Main from "resource:///org/gnome/shell/ui/main.js";
 import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
 
-const CONFIG = {
+let CONFIG = {
   popupWidth: 400,
   popupHeight: 300,
   iconSize: 48,
@@ -1070,12 +1070,29 @@ const StackButton = GObject.registerClass(
 export default class DashStacksExtension extends Extension {
   enable() {
     this._settings = this.getSettings();
+    
+    const syncConfig = () => {
+        CONFIG.popupWidth = this._settings.get_int('popup-width');
+        CONFIG.popupHeight = this._settings.get_int('popup-height');
+        CONFIG.iconSize = this._settings.get_int('icon-size');
+        CONFIG.tooltipDelay = this._settings.get_int('tooltip-delay');
+    };
+    
+    syncConfig(); // initial pull
+    
     this._settingsSignal = this._settings.connect("changed::stacks", () => {
       this._injectStacks();
     });
-
     this._buttons = [];
     this._boxSignals = [];
+    this._configSignals = [];
+    ['popup-width', 'popup-height', 'icon-size', 'tooltip-delay'].forEach(key => {
+        let sig = this._settings.connect(`changed::${key}`, () => {
+            syncConfig();
+            this._injectStacks();
+        });
+        this._configSignals.push(sig);
+    });
 
     let dash = Main.overview.dash;
     this._originalRedisplay = dash._redisplay;
@@ -1338,6 +1355,11 @@ export default class DashStacksExtension extends Extension {
   }
 
   disable() {
+    if (this._configSignals) {
+        this._configSignals.forEach(sig => this._settings.disconnect(sig));
+        this._configSignals = [];
+    }
+    
     if (this._monitorsChangedId) {
       Main.layoutManager.disconnect(this._monitorsChangedId);
       this._monitorsChangedId = null;

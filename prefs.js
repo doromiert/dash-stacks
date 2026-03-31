@@ -8,8 +8,29 @@ export default class DashStacksPreferences extends ExtensionPreferences {
         const page = new Adw.PreferencesPage();
         window.add(page);
 
-        let group = null; 
+        // --- new general options block ---
+        let generalGroup = new Adw.PreferencesGroup({ title: 'General Options' });
+        page.add(generalGroup);
 
+        const addSpinRow = (title, key, min, max) => {
+            let row = new Adw.SpinRow({ 
+                title: title,
+                adjustment: new Gtk.Adjustment({
+                    lower: min, upper: max, step_increment: 1,
+                    value: settings.get_int(key)
+                })
+            });
+            row.connect('notify::value', () => settings.set_int(key, row.value));
+            generalGroup.add(row);
+        };
+
+        addSpinRow('Popup Width', 'popup-width', 200, 1000);
+        addSpinRow('Popup Height', 'popup-height', 200, 1000);
+        addSpinRow('Icon Size', 'icon-size', 16, 128);
+        addSpinRow('Tooltip Delay (ms)', 'tooltip-delay', 0, 2000);
+        // ---------------------------------
+
+        let group = null; 
         const renderList = () => {
             if (group) {
                 page.remove(group);

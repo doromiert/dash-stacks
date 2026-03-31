@@ -6,5 +6,22 @@
       <summary>Stacks Configuration</summary>
       <description>JSON string containing the stacks configuration array.</description>
     </key>
+
+    <key name="popup-width" type="i">
+      <default>400</default>
+      <summary>Popup Width</summary>
+    </key>
+    <key name="popup-height" type="i">
+      <default>300</default>
+      <summary>Popup Height</summary>
+    </key>
+    <key name="icon-size" type="i">
+      <default>48</default>
+      <summary>Icon Size</summary>
+    </key>
+    <key name="tooltip-delay" type="i">
+      <default>500</default>
+      <summary>Tooltip Delay</summary>
+    </key>
   </schema>
 </schemalist>
