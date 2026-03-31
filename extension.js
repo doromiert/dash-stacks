@@ -235,11 +235,29 @@ const StackPopup = GObject.registerClass(
         y_align: Clutter.ActorAlign.CENTER,
       });
 
-      this.dummyBtn = new St.Widget({ style_class: "stack-dummy-button" });
+      this.nautilusBtn = new St.Button({
+        child: new St.Icon({
+          icon_name: "folder-open-symbolic",
+          icon_size: 16,
+        }),
+        style_class: "stack-nautilus-button", // you can style this in stylesheet.css
+        reactive: true,
+        x_align: Clutter.ActorAlign.CENTER,
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+
+      this.nautilusBtn.connect("clicked", () => {
+        let current = this.history[this.history.length - 1];
+        Gio.AppInfo.launch_default_for_uri("file://" + current.path, null);
+
+        // optional: close everything so you actually see the window
+        this.sourceActor._closePopup();
+        Main.overview.hide();
+      });
 
       this.header.add_child(this.backBtn);
       this.header.add_child(this.titleLabel);
-      this.header.add_child(this.dummyBtn);
+      this.header.add_child(this.nautilusBtn);
       contentBox.add_child(this.header);
 
       this.scroll = new St.ScrollView({
@@ -672,6 +690,15 @@ export default class DashStacksExtension extends Extension {
     dash._redisplay = () => {
       this._originalRedisplay.call(dash);
       this._injectStacks();
+      // After redisplay, we need to ensure the Show Apps button is
+      // still in our master layout and not back in the original box.
+      if (
+        this.masterLayout &&
+        dash.showAppsButton.get_parent() !== this.masterLayout
+      ) {
+        dash._box.remove_child(dash.showAppsButton);
+        this.masterLayout.add_child(dash.showAppsButton);
+      }
     };
 
     if (dash._box) {
@@ -687,14 +714,24 @@ export default class DashStacksExtension extends Extension {
 
     GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
       let dash = Main.overview.dash;
-      let dashParent = dash._box.get_parent();
+      let dashBox = dash._box;
+      let dashParent = dashBox.get_parent();
+
       if (this.dashScroll) return GLib.SOURCE_REMOVE;
 
-    //   this.dash.style = "padding-rigth: 10px;"
+      // 1. CREATE THE MASTER WRAPPER (This holds everything)
+      this.masterLayout = new St.BoxLayout({
+        style_class: "dash-scroll-master",
+        vertical: false,
+        x_expand: true,
+        y_expand: false,
+        reactive: true,
+      });
 
+      // 2. CREATE THE SCROLL VIEW (For the icons only)
       this.dashScroll = new St.ScrollView({
         style_class: "dash-scroll-view",
-        hscrollbar_policy: St.PolicyType.AUTOMATIC,
+        hscrollbar_policy: St.PolicyType.EXTERNAL, // Hidden but scrollable
         vscrollbar_policy: St.PolicyType.NEVER,
         overlay_scrollbars: true,
         enable_mouse_scrolling: true,
@@ -703,10 +740,7 @@ export default class DashStacksExtension extends Extension {
         height: 96,
       });
 
-      let monitor = Main.layoutManager.currentMonitor;
-        let maxWidth = monitor.width - 76 * 2;
-      this.dashScroll.style = `max-width: ${maxWidth}px;`;
-
+      // 3. CREATE THE INTERNAL WRAPPER
       this.dashWrapper = new St.BoxLayout({
         style_class: "dash-scroll-wrapper",
         vertical: false,
@@ -718,7 +752,7 @@ export default class DashStacksExtension extends Extension {
       this.dashScroll.reactive = true;
       this.dashWrapper.reactive = true;
 
-         // 2. THE MASTER INPUT HIJACKER (Mouse + Touch)
+      // --- INPUT HIJACKER (Mouse + Touch) ---
       let dashTouchStartX = null;
       let dashLastTouchX = null;
       let dashIsDragging = false;
@@ -727,14 +761,11 @@ export default class DashStacksExtension extends Extension {
         let type = event.type();
         let adj = this.dashScroll.hadjustment;
 
-        // --- MOUSE WHEEL ---
         if (type === Clutter.EventType.SCROLL) {
           let direction = event.get_scroll_direction();
-          let scrollAmount = 76; // one icon width
-
+          let scrollAmount = 76;
           if (direction === Clutter.ScrollDirection.SMOOTH) {
             let [dx, dy] = event.get_scroll_delta();
-            // Handle touchpads that map vertical two-finger to horizontal
             let delta = Math.abs(dx) > Math.abs(dy) ? dx : dy;
             adj.value += delta * 30;
           } else if (
@@ -748,12 +779,9 @@ export default class DashStacksExtension extends Extension {
           ) {
             adj.value += scrollAmount;
           }
-
-          // Kill the event so GNOME doesn't switch workspaces
           return Clutter.EVENT_STOP;
         }
 
-        // --- TOUCH SCREEN SWIPE ---
         if (type === Clutter.EventType.TOUCH_BEGIN) {
           let [x, y] = event.get_coords();
           dashTouchStartX = x;
@@ -766,16 +794,12 @@ export default class DashStacksExtension extends Extension {
           if (dashTouchStartX === null) return Clutter.EVENT_PROPAGATE;
           let [x, y] = event.get_coords();
           let dx = dashLastTouchX - x;
-
-          // 10px threshold: diff between a clumsy tap and a swipe
-          if (!dashIsDragging && Math.abs(dashTouchStartX - x) > 10) {
+          if (!dashIsDragging && Math.abs(dashTouchStartX - x) > 10)
             dashIsDragging = true;
-          }
-
           if (dashIsDragging) {
             adj.value += dx;
             dashLastTouchX = x;
-            return Clutter.EVENT_STOP; // Stop buttons from opening while swiping
+            return Clutter.EVENT_STOP;
           }
         }
 
@@ -786,19 +810,43 @@ export default class DashStacksExtension extends Extension {
           dashTouchStartX = null;
           if (dashIsDragging) {
             dashIsDragging = false;
-            return Clutter.EVENT_STOP; // Stop ghost clicks on release
+            return Clutter.EVENT_STOP;
           }
         }
-
         return Clutter.EVENT_PROPAGATE;
       });
 
-      // Surgery.
+      // --- THE SURGERY ---
 
-      dashParent.remove_child(dash._box);
-      this.dashWrapper.add_child(dash._box);
-      this.dashScroll.add_child(this.dashWrapper);
-      dashParent.insert_child_at_index(this.dashScroll, 0);
+      // A. Pull the All Apps button out of the dash box
+      let showApps = dash.showAppsButton;
+      dashBox.remove_child(showApps);
+
+      // B. Re-nest the dash box into the scroll view
+      dashParent.remove_child(dashBox);
+      this.dashWrapper.add_child(dashBox);
+      this.dashScroll.set_child(this.dashWrapper);
+
+      // C. Build the master layout: [ Scrollable Icons | All Apps Button ]
+      this.masterLayout.add_child(this.dashScroll);
+      this.masterLayout.add_child(showApps);
+
+      // D. Put it all back into the dash
+      dashParent.insert_child_at_index(this.masterLayout, 0);
+
+      // E. Update width based on monitor
+      this._updateMaxWidth = () => {
+        let monitor = Main.layoutManager.currentMonitor;
+        // Padding: 76*2 (edges) + 80 (approx space for All Apps button)
+        let maxWidth = monitor.width - 76 * 2 - 80;
+        this.dashScroll.style = `max-width: ${maxWidth}px;`;
+      };
+
+      this._updateMaxWidth();
+      this._monitorsChangedId = Main.layoutManager.connect(
+        "monitors-changed",
+        () => this._updateMaxWidth(),
+      );
 
       return GLib.SOURCE_REMOVE;
     });
@@ -828,13 +876,14 @@ export default class DashStacksExtension extends Extension {
     });
   }
 
- _enforceLayout() {
+  _enforceLayout() {
     if (this._enforceTimeoutId) {
       GLib.source_remove(this._enforceTimeoutId);
     }
 
     this._enforceTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
       let dash = Main.overview.dash;
+      // We check dash._box directly now
       if (!this.dashWrapper || !dash._box) {
         this._enforceTimeoutId = null;
         return GLib.SOURCE_REMOVE;
@@ -844,8 +893,10 @@ export default class DashStacksExtension extends Extension {
       dash._box.layout_manager.spacing = 0;
 
       dash._box.get_children().forEach((c) => {
-        c.x_expand = false;
+        // Skip the ghost/null children if any
+        if (!c) return;
 
+        c.x_expand = false;
         let isSepC = c.style_class && c.style_class.includes("separator");
         let child = c.get_first_child ? c.get_first_child() : null;
         let isSepChild =
@@ -853,27 +904,15 @@ export default class DashStacksExtension extends Extension {
 
         if (child) {
           child.x_expand = false;
-
           if (isSepC || isSepChild) {
-            // Separators: Keep at 1px
             c.set_width(1);
             child.set_width(1);
             child.set_margin_left(6);
             child.set_margin_right(6);
             totalWidth += 13;
           } else {
-            // Standard Apps/Stacks:
-            // Bump to 80px to account for the 2px + 2px internal padding
             c.set_width(80);
-
-            // Force the icon itself to 76x76
             child.set_width(76);
-            // child.set_height(76);
-
-            // Anchor to top to keep the "basement" for the running dot
-            // child.y_expand = false;
-            // child.y_align = Clutter.ActorAlign.START;
-
             totalWidth += 80;
           }
         } else {
@@ -881,7 +920,6 @@ export default class DashStacksExtension extends Extension {
             c.set_width(1);
             totalWidth += 13;
           } else {
-            // Ghost spacer
             c.set_width(0);
           }
         }
@@ -893,6 +931,10 @@ export default class DashStacksExtension extends Extension {
       this._enforceTimeoutId = null;
       return GLib.SOURCE_REMOVE;
     });
+    let paddingForShowApps = 80;
+
+    dash._box.set_width(totalWidth + paddingForShowApps);
+    this.dashWrapper.set_width(totalWidth + paddingForShowApps);
   }
 
   _getStacksConfig() {
@@ -911,35 +953,56 @@ export default class DashStacksExtension extends Extension {
   }
 
   disable() {
+    // 1. disconnect the monitor listener (important!)
+    if (this._monitorsChangedId) {
+      Main.layoutManager.disconnect(this._monitorsChangedId);
+      this._monitorsChangedId = null;
+    }
+
     if (this._settingsSignal) this._settings.disconnect(this._settingsSignal);
     this._settings = null;
+
     if (this._originalRedisplay)
       Main.overview.dash._redisplay = this._originalRedisplay;
+
     if (this._overviewHidingId)
       Main.overview.disconnect(this._overviewHidingId);
+
     this._buttons.forEach((btn) => btn.destroy());
     this._buttons = [];
+
     if (this._boxSignals) {
       let dash = Main.overview.dash;
       if (dash && dash._box)
         this._boxSignals.forEach((id) => dash._box.disconnect(id));
       this._boxSignals = [];
     }
+
     if (this.dashScroll) {
       let dash = Main.overview.dash;
-      let dashParent = this.dashScroll.get_parent();
+      let dashParent = this.masterLayout.get_parent();
+
       if (dashParent) {
+        // 2. return the children to their original home
         this.dashWrapper.remove_child(dash._box);
-        dashParent.remove_child(this.dashScroll);
-        if (this._originalBoxYExpand !== undefined) {
-          dash._box.y_expand = this._originalBoxYExpand;
-          dash._box.y_align = this._originalBoxYAlign;
-        }
-        dash._box.set_width(-1);
+
+        // 3. PUT THE ALL APPS BUTTON BACK
+        this.masterLayout.remove_child(dash.showAppsButton);
+        dash._box.add_child(dash.showAppsButton);
+
         dashParent.insert_child_at_index(dash._box, 0);
+        dashParent.remove_child(this.masterLayout);
       }
+
+      dash._box.set_width(-1); // reset to auto-width
+
       this.dashWrapper.destroy();
       this.dashScroll.destroy();
+      this.masterLayout.destroy();
+
+      this.dashScroll = null;
+      this.dashWrapper = null;
+      this.masterLayout = null;
     }
   }
 }

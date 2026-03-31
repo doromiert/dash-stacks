@@ -85,8 +85,19 @@
 
 .stack-header {
   margin-bottom: 12px;
-  padding-bottom: 8px;
+  /* padding-bottom: 8px; */
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.stack-nautilus-button {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  transition-duration: 100ms;
+}
+
+.stack-nautilus-button:hover {
+  background-color: rgba(255, 255, 255, 0.2);
 }
 
 .stack-header-title {
@@ -145,6 +156,11 @@
 /* 3. Push the running dot out of the way */
 .dash-scroll-wrapper .app-grid-running-dot {
   bottom: -10px;
+}
+
+.dash-scroll-view {
+    background-color: transparent;
+    -st-hscrollbar-style: never;
 }
 
 .dash-scroll-view StScrollBar {
