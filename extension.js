@@ -100,8 +100,45 @@ const StackItem = GObject.registerClass(
       let isDir = fileInfo.get_file_type() === Gio.FileType.DIRECTORY;
       let isApp = fileName.endsWith(".desktop");
 
+      let isDownloading = false;
+
+      // if it's a dir, check inside for active downloads
+      if (isDir) {
+        try {
+          let dir = Gio.File.new_for_path(this.path);
+          let enumerator = dir.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
+          let info;
+          while ((info = enumerator.next_file(null)) !== null) {
+            let n = info.get_name();
+            if (n.endsWith('.part') || n.endsWith('.crdownload') || n.includes('.goutputstream')) {
+              isDownloading = true;
+              break;
+            }
+          }
+          enumerator.close(null);
+        } catch (e) {}
+      } else {
+        isDownloading = fileName.endsWith('.part') || 
+                        fileName.endsWith('.crdownload') || 
+                        fileName.includes('.goutputstream');
+      }
+
+      let displayName = fileName.replace(".desktop", "")
+                                .replace(".crdownload", "")
+                                .replace(".part", "")
+                                .replace(".goutputstream", "");
+
       let box = new St.BoxLayout({
         vertical: true,
+        x_align: Clutter.ActorAlign.CENTER,
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+
+      // strict width/height fixes the off-center bug
+      let iconBin = new St.Widget({
+        layout_manager: new Clutter.BinLayout(),
+        width: CONFIG.iconSize,
+        height: CONFIG.iconSize,
         x_align: Clutter.ActorAlign.CENTER,
         y_align: Clutter.ActorAlign.CENTER,
       });
@@ -109,10 +146,34 @@ const StackItem = GObject.registerClass(
       let icon = new St.Icon({
         gicon: fileInfo.get_icon(),
         icon_size: CONFIG.iconSize,
+        x_expand: true, y_expand: true,
+        x_align: Clutter.ActorAlign.CENTER,
+        y_align: Clutter.ActorAlign.CENTER,
       });
+      iconBin.add_child(icon);
+
+      if (isDownloading) {
+        let overlay = new St.Bin({
+          style_class: "stack-overlay",
+          x_expand: true, y_expand: true,
+          x_align: Clutter.ActorAlign.FILL,
+          y_align: Clutter.ActorAlign.FILL,
+        });
+
+        let dlIcon = new St.Icon({
+          icon_name: 'folder-download-symbolic',
+          icon_size: 24,
+          x_expand: true, y_expand: true,
+          x_align: Clutter.ActorAlign.CENTER,
+          y_align: Clutter.ActorAlign.CENTER,
+        });
+
+        overlay.set_child(dlIcon);
+        iconBin.add_child(overlay);
+      }
 
       let label = new St.Label({
-        text: fileName.replace(".desktop", ""),
+        text: displayName,
         style_class: "stack-item-label",
         style: "max-width: 68px;",
       });
@@ -120,7 +181,7 @@ const StackItem = GObject.registerClass(
       label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
       label.clutter_text.line_wrap = false;
 
-      box.add_child(icon);
+      box.add_child(iconBin);
       box.add_child(label);
       this.set_child(box);
 
@@ -138,7 +199,7 @@ const StackItem = GObject.registerClass(
           popupRef.sourceActor._closePopup();
         }
       });
-      // Make the file draggable
+      
       this._delegate = this;
       let draggable = DND.makeDraggable(this, {
         restoreOnSuccess: false,
@@ -435,12 +496,59 @@ const StackButton = GObject.registerClass(
       this._index = index;
       this._tooltipTimeoutId = 0;
 
-      this.set_child(
-        new St.Icon({
-          icon_name: stackConfig.icon,
-          icon_size: 64,
-        }),
-      );
+      let iconBin = new St.Widget({
+        layout_manager: new Clutter.BinLayout(),
+        width: 64,
+        height: 64,
+        x_align: Clutter.ActorAlign.CENTER,
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+
+      this.mainIcon = new St.Icon({
+        icon_name: stackConfig.icon,
+        icon_size: 64,
+        x_expand: true, y_expand: true,
+        x_align: Clutter.ActorAlign.CENTER,
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+
+      this.downloadOverlay = new St.Bin({
+        style_class: "stack-overlay",
+        x_expand: false, y_expand: false,
+        x_align: Clutter.ActorAlign.FILL,
+        y_align: Clutter.ActorAlign.FILL,
+        opacity: 0, // hide via opacity so shell layout doesn't drop it
+      });
+
+      this.dlIcon = new St.Icon({
+        icon_name: 'folder-download-symbolic',
+        icon_size: 32,
+        x_expand: true, y_expand: true,
+        x_align: Clutter.ActorAlign.CENTER,
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+
+      this.downloadOverlay.set_child(this.dlIcon);
+      iconBin.add_child(this.mainIcon);
+      iconBin.add_child(this.downloadOverlay);
+      this.set_child(iconBin);
+
+      this.tooltip = new StackTooltip(stackConfig.name);
+
+      let resolvedPath = this.config.path.startsWith('~/') 
+          ? GLib.get_home_dir() + this.config.path.substring(1) 
+          : this.config.path;
+          
+      this._dirMonitor = Gio.File.new_for_path(resolvedPath).monitor_directory(Gio.FileMonitorFlags.NONE, null);
+      this._dirMonitor.connect('changed', () => this._checkDownloads(resolvedPath));
+      this._checkDownloads(resolvedPath);
+
+    //   this.set_child(
+    //     new St.Icon({
+    //       icon_name: stackConfig.icon,
+    //       icon_size: 64,
+    //     }),
+    //   );
 
       this.tooltip = new StackTooltip(stackConfig.name);
 
@@ -487,6 +595,57 @@ const StackButton = GObject.registerClass(
       });
     }
 
+    _checkDownloads(path) {
+      if (this._scanTimeoutId) return; 
+      
+      this._scanTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+        try {
+          let dir = Gio.File.new_for_path(path);
+          let enumerator = dir.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
+          let isDownloading = false;
+          
+          let fileInfo;
+          while ((fileInfo = enumerator.next_file(null)) !== null) {
+            let name = fileInfo.get_name();
+            if (name.endsWith('.part') || name.endsWith('.crdownload') || name.includes('.goutputstream')) {
+              isDownloading = true;
+              break;
+            }
+          }
+          enumerator.close(null);
+
+          if (isDownloading && this.downloadOverlay.opacity === 0) {
+            this.downloadOverlay.ease({
+              opacity: 255,
+              duration: 200,
+              mode: Clutter.AnimationMode.EASE_OUT_QUAD
+            });
+            // dim the main icon
+            this.mainIcon.ease({
+              opacity: 100, // adjust 0-255 for how dark you want it
+              duration: 200,
+              mode: Clutter.AnimationMode.EASE_OUT_QUAD
+            });
+          } else if (!isDownloading && this.downloadOverlay.opacity === 255) {
+            this.downloadOverlay.ease({
+              opacity: 0,
+              duration: 200,
+              mode: Clutter.AnimationMode.EASE_OUT_QUAD
+            });
+            // restore the main icon
+            this.mainIcon.ease({
+              opacity: 255,
+              duration: 200,
+              mode: Clutter.AnimationMode.EASE_OUT_QUAD
+            });
+          }
+        } catch (e) {}
+        
+        this._scanTimeoutId = null;
+        return GLib.SOURCE_REMOVE;
+      });
+    }
+
     _createHeader(title) {
       let item = new PopupMenu.PopupBaseMenuItem({
         style_class: "menu-header-item", 
@@ -520,11 +679,10 @@ const StackButton = GObject.registerClass(
     _buildMenu() {
       this._menu.removeAll();
 
-      // 1. Rename Section
       this._menu.addMenuItem(this._createHeader("Rename"));
 
       let nameItem = new PopupMenu.PopupBaseMenuItem({
-        reactive: true, // reactive so the whole row is a hit-target
+        reactive: true, 
         can_focus: true,
         style_class: "menu-input-row",
       });
@@ -536,7 +694,6 @@ const StackButton = GObject.registerClass(
       });
       nameEntry.set_x_align(Clutter.ActorAlign.FILL);
 
-      // Transfer focus to entry if the row is clicked
       nameItem.connect("button-press-event", () => {
         nameEntry.grab_key_focus();
         return Clutter.EVENT_STOP;
@@ -550,7 +707,6 @@ const StackButton = GObject.registerClass(
       nameItem.add_child(nameEntry);
       this._menu.addMenuItem(nameItem);
 
-      // 2. Icon Section
       this._menu.addMenuItem(this._createHeader("Change Icon"));
 
       let iconItem = new PopupMenu.PopupBaseMenuItem({
@@ -579,7 +735,6 @@ const StackButton = GObject.registerClass(
       iconItem.add_child(iconEntry);
       this._menu.addMenuItem(iconItem);
 
-      // 3. Delete
       this._menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
       let deleteItem = new PopupMenu.PopupMenuItem("Delete Stack");
@@ -587,6 +742,7 @@ const StackButton = GObject.registerClass(
       deleteItem.connect("activate", () => this._deleteSelf());
       this._menu.addMenuItem(deleteItem);
     }
+
     _updateConfig(key, value) {
       let stacks = JSON.parse(this._settings.get_string("stacks"));
       if (stacks[this._index]) {
@@ -691,6 +847,14 @@ const StackButton = GObject.registerClass(
     }
 
     destroy() {
+      if (this._scanTimeoutId) {
+        GLib.source_remove(this._scanTimeoutId);
+        this._scanTimeoutId = null;
+      }
+      if (this._dirMonitor) {
+        this._dirMonitor.cancel();
+        this._dirMonitor = null;
+      }
       if (this._tooltipTimeoutId > 0)
         GLib.source_remove(this._tooltipTimeoutId);
       this.tooltip.destroy();

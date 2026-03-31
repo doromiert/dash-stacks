@@ -1,3 +1,24 @@
+.stack-item-icon-bin {
+  width: 48px;
+  height: 48px;
+}
+
+.stack-overlay {
+  background-color: rgba(0, 0, 0, 0.5);
+  border-radius: 8px;
+  height: 64px !important;
+  width: 64px !important;
+}
+
+.dash-stack-button .stack-overlay {
+  border-radius: 12px;
+}
+
+.stack-item-spinner {
+  width: 24px;
+  height: 24px;
+}
+
 /* 1. nuke gnome's default padding on the outer item and set your own sides */
 .dash-stacks-context-menu .popup-menu-item {
     padding: 9px 6px !important; /* 9px top/bottom, 6px sides */
