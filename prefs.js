@@ -44,7 +44,21 @@ export default class DashStacksPreferences extends ExtensionPreferences {
                     save(stacks);
                 });
 
+                let autoIconRow = new Adw.SwitchRow({ 
+                    title: 'Auto-generate Grid Icon',
+                    subtitle: 'Creates an icon based on folder contents'
+                });
+                autoIconRow.active = !!stack.autoIcon;
+
                 let iconEntry = new Adw.EntryRow({ title: 'Icon Name', text: stack.icon });
+                iconEntry.sensitive = !autoIconRow.active; // disable if auto is on
+
+                autoIconRow.connect('notify::active', () => {
+                    stacks[index].autoIcon = autoIconRow.active;
+                    iconEntry.sensitive = !autoIconRow.active;
+                    save(stacks);
+                });
+
                 iconEntry.connect('changed', () => {
                     stacks[index].icon = iconEntry.text;
                     save(stacks);
@@ -62,6 +76,7 @@ export default class DashStacksPreferences extends ExtensionPreferences {
                 });
 
                 row.add_row(nameEntry);
+                row.add_row(autoIconRow);
                 row.add_row(pathEntry);
                 row.add_row(iconEntry);
                 row.add_row(deleteBtn);

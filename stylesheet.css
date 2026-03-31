@@ -1,3 +1,31 @@
+.stack-auto-icon {
+    background-color: rgba(255, 255, 255, 0.1);
+    border-radius: 14px;
+    padding: 4px; /* minimal padding to let icons grow */
+}
+
+/* force the sub-icons to be bigger than 16px */
+.stack-auto-icon StIcon {
+    width: 26px !important;
+    height: 26px !important;
+    -st-icon-style: regular; /* ensures they don't force symbolic scaling if unwanted */
+}
+
+/* tighten the vertical gap */
+.stack-auto-icon > StBoxLayout {
+    margin-bottom: 2px;
+}
+
+.stack-auto-icon > StBoxLayout:last-child {
+    margin-bottom: 0px;
+}
+
+/* tighten the horizontal gap */
+.stack-auto-row {
+    spacing: 2px;
+    justify-content: center;
+}
+
 .stack-item-icon-bin {
   width: 48px;
   height: 48px;

@@ -102,15 +102,22 @@ const StackItem = GObject.registerClass(
 
       let isDownloading = false;
 
-      // if it's a dir, check inside for active downloads
       if (isDir) {
         try {
           let dir = Gio.File.new_for_path(this.path);
-          let enumerator = dir.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
+          let enumerator = dir.enumerate_children(
+            "standard::name",
+            Gio.FileQueryInfoFlags.NONE,
+            null,
+          );
           let info;
           while ((info = enumerator.next_file(null)) !== null) {
             let n = info.get_name();
-            if (n.endsWith('.part') || n.endsWith('.crdownload') || n.includes('.goutputstream')) {
+            if (
+              n.endsWith(".part") ||
+              n.endsWith(".crdownload") ||
+              n.includes(".goutputstream")
+            ) {
               isDownloading = true;
               break;
             }
@@ -118,15 +125,28 @@ const StackItem = GObject.registerClass(
           enumerator.close(null);
         } catch (e) {}
       } else {
-        isDownloading = fileName.endsWith('.part') || 
-                        fileName.endsWith('.crdownload') || 
-                        fileName.includes('.goutputstream');
+        isDownloading =
+          fileName.endsWith(".part") ||
+          fileName.endsWith(".crdownload") ||
+          fileName.includes(".goutputstream");
       }
 
-      let displayName = fileName.replace(".desktop", "")
-                                .replace(".crdownload", "")
-                                .replace(".part", "")
-                                .replace(".goutputstream", "");
+      let displayName = fileName
+        .replace(".desktop", "")
+        .replace(".crdownload", "")
+        .replace(".part", "")
+        .replace(".goutputstream", "");
+
+      let displayIcon = fileInfo.get_icon();
+
+      // grab the real app name and icon if it's a desktop file
+      if (isApp) {
+        let appInfo = Gio.DesktopAppInfo.new_from_filename(this.path);
+        if (appInfo) {
+          displayName = appInfo.get_name() || displayName;
+          displayIcon = appInfo.get_icon() || displayIcon;
+        }
+      }
 
       let box = new St.BoxLayout({
         vertical: true,
@@ -134,7 +154,6 @@ const StackItem = GObject.registerClass(
         y_align: Clutter.ActorAlign.CENTER,
       });
 
-      // strict width/height fixes the off-center bug
       let iconBin = new St.Widget({
         layout_manager: new Clutter.BinLayout(),
         width: CONFIG.iconSize,
@@ -144,9 +163,10 @@ const StackItem = GObject.registerClass(
       });
 
       let icon = new St.Icon({
-        gicon: fileInfo.get_icon(),
+        gicon: displayIcon, // use the injected icon here
         icon_size: CONFIG.iconSize,
-        x_expand: true, y_expand: true,
+        x_expand: true,
+        y_expand: true,
         x_align: Clutter.ActorAlign.CENTER,
         y_align: Clutter.ActorAlign.CENTER,
       });
@@ -155,15 +175,17 @@ const StackItem = GObject.registerClass(
       if (isDownloading) {
         let overlay = new St.Bin({
           style_class: "stack-overlay",
-          x_expand: true, y_expand: true,
+          x_expand: true,
+          y_expand: true,
           x_align: Clutter.ActorAlign.FILL,
           y_align: Clutter.ActorAlign.FILL,
         });
 
         let dlIcon = new St.Icon({
-          icon_name: 'folder-download-symbolic',
+          icon_name: "folder-download-symbolic",
           icon_size: 24,
-          x_expand: true, y_expand: true,
+          x_expand: true,
+          y_expand: true,
           x_align: Clutter.ActorAlign.CENTER,
           y_align: Clutter.ActorAlign.CENTER,
         });
@@ -173,7 +195,7 @@ const StackItem = GObject.registerClass(
       }
 
       let label = new St.Label({
-        text: displayName,
+        text: displayName, // use the injected name here
         style_class: "stack-item-label",
         style: "max-width: 68px;",
       });
@@ -199,7 +221,7 @@ const StackItem = GObject.registerClass(
           popupRef.sourceActor._closePopup();
         }
       });
-      
+
       this._delegate = this;
       let draggable = DND.makeDraggable(this, {
         restoreOnSuccess: false,
@@ -496,6 +518,10 @@ const StackButton = GObject.registerClass(
       this._index = index;
       this._tooltipTimeoutId = 0;
 
+      let resolvedPath = this.config.path.startsWith("~/")
+        ? GLib.get_home_dir() + this.config.path.substring(1)
+        : this.config.path;
+
       let iconBin = new St.Widget({
         layout_manager: new Clutter.BinLayout(),
         width: 64,
@@ -504,27 +530,34 @@ const StackButton = GObject.registerClass(
         y_align: Clutter.ActorAlign.CENTER,
       });
 
-      this.mainIcon = new St.Icon({
-        icon_name: stackConfig.icon,
-        icon_size: 64,
-        x_expand: true, y_expand: true,
-        x_align: Clutter.ActorAlign.CENTER,
-        y_align: Clutter.ActorAlign.CENTER,
-      });
+      if (this.config.autoIcon) {
+        this.mainIcon = this._createAutoIconWidget(resolvedPath);
+      } else {
+        this.mainIcon = new St.Icon({
+          icon_name: stackConfig.icon,
+          icon_size: 64,
+          x_expand: true,
+          y_expand: true,
+          x_align: Clutter.ActorAlign.CENTER,
+          y_align: Clutter.ActorAlign.CENTER,
+        });
+      }
 
       this.downloadOverlay = new St.Bin({
         style_class: "stack-overlay",
-        x_expand: false, y_expand: false,
+        x_expand: false,
+        y_expand: false,
         x_align: Clutter.ActorAlign.FILL,
         y_align: Clutter.ActorAlign.FILL,
-        opacity: 0, // hide via opacity so shell layout doesn't drop it
+        opacity: 0,
       });
       this.downloadOverlay.set_pivot_point(0.5, 0.5);
 
       this.dlIcon = new St.Icon({
-        icon_name: 'folder-download-symbolic',
+        icon_name: "folder-download-symbolic",
         icon_size: 32,
-        x_expand: true, y_expand: true,
+        x_expand: true,
+        y_expand: true,
         x_align: Clutter.ActorAlign.CENTER,
         y_align: Clutter.ActorAlign.CENTER,
       });
@@ -536,22 +569,14 @@ const StackButton = GObject.registerClass(
 
       this.tooltip = new StackTooltip(stackConfig.name);
 
-      let resolvedPath = this.config.path.startsWith('~/') 
-          ? GLib.get_home_dir() + this.config.path.substring(1) 
-          : this.config.path;
-          
-      this._dirMonitor = Gio.File.new_for_path(resolvedPath).monitor_directory(Gio.FileMonitorFlags.NONE, null);
-      this._dirMonitor.connect('changed', () => this._checkDownloads(resolvedPath));
+      this._dirMonitor = Gio.File.new_for_path(resolvedPath).monitor_directory(
+        Gio.FileMonitorFlags.NONE,
+        null,
+      );
+      this._dirMonitor.connect("changed", () =>
+        this._checkDownloads(resolvedPath),
+      );
       this._checkDownloads(resolvedPath);
-
-    //   this.set_child(
-    //     new St.Icon({
-    //       icon_name: stackConfig.icon,
-    //       icon_size: 64,
-    //     }),
-    //   );
-
-      this.tooltip = new StackTooltip(stackConfig.name);
 
       this.connect("notify::hover", () => {
         if (this.hover) {
@@ -596,137 +621,224 @@ const StackButton = GObject.registerClass(
       });
     }
 
-   _checkDownloads(path) {
-    if (this._scanTimeoutId) return; 
-    
-    this._scanTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+    _getGridIcons(fullPath) {
+      let icons = [];
       try {
-        let dir = Gio.File.new_for_path(path);
-        let enumerator = dir.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
-        let isDownloading = false;
-        
-        let fileInfo;
-        while ((fileInfo = enumerator.next_file(null)) !== null) {
-          let name = fileInfo.get_name();
-          if (name.endsWith('.part') || name.endsWith('.crdownload') || name.includes('.goutputstream')) {
-            isDownloading = true;
-            break;
+        let dir = Gio.File.new_for_path(fullPath);
+        let iter = dir.enumerate_children(
+          "standard::name,standard::type,standard::icon,standard::is-hidden",
+          Gio.FileQueryInfoFlags.NONE,
+          null,
+        );
+
+        let files = [];
+        let folders = [];
+        let info;
+
+        while ((info = iter.next_file(null)) !== null) {
+          if (info.get_is_hidden()) continue;
+
+          let type = info.get_file_type();
+          let icon = info.get_icon();
+
+          if (type === Gio.FileType.REGULAR) {
+            let fileName = info.get_name();
+            if (fileName.endsWith('.desktop')) {
+              let appInfo = Gio.DesktopAppInfo.new_from_filename(`${fullPath}/${fileName}`);
+              if (appInfo && appInfo.get_icon()) {
+                icon = appInfo.get_icon();
+              }
+            }
+            files.push(icon);
+          } else if (type === Gio.FileType.DIRECTORY) {
+            folders.push(icon);
           }
+
+          if (files.length >= 4) break;
         }
-        enumerator.close(null);
 
-        if (isDownloading && this.downloadOverlay.opacity === 0) {
-          // set initial big scale before easing to normal size
-          this.downloadOverlay.set_scale(1.5, 1.5);
-          this.downloadOverlay.ease({
-            opacity: 255,
-            scale_x: 1.0,
-            scale_y: 1.0,
-            duration: 200,
-            mode: Clutter.AnimationMode.EASE_OUT_QUAD
-          });
-          
-          this.mainIcon.ease({
-            opacity: 100, 
-            duration: 200,
-            mode: Clutter.AnimationMode.EASE_OUT_QUAD
-          });
+        icons = [...files, ...folders].slice(0, 4);
+      } catch (e) {
+        console.warn(`[dash-stacks] auto-icon scan failed: ${e}`);
+      }
+      return icons;
+    }
 
-          this._triggerJumpIndicator(true);
-
-        } else if (!isDownloading && this.downloadOverlay.opacity === 255) {
-          // ease back up to 1.5 while fading out
-          this.downloadOverlay.ease({
-            opacity: 0,
-            scale_x: 1.5,
-            scale_y: 1.5,
-            duration: 200,
-            mode: Clutter.AnimationMode.EASE_OUT_QUAD
-          });
-          
-          this.mainIcon.ease({
-            opacity: 255,
-            duration: 200,
-            mode: Clutter.AnimationMode.EASE_OUT_QUAD
-          });
-
-          this._triggerJumpIndicator(false);
-        }
-      } catch (e) {}
-      
-      this._scanTimeoutId = null;
-      return GLib.SOURCE_REMOVE;
-    });
-  }
-
-  _triggerJumpIndicator(isStarting) {
-    if (Main.overview.visible) return;
-
-    // grab the exact coordinates and size of the button on the dock
-    let [startX, startY] = this.get_transformed_position();
-    let [width, height] = this.get_transformed_size();
-
-    // fallback sizes just in case the layout manager is being weird
-    let w = width > 0 ? width : 64;
-    let h = height > 0 ? height : 64;
-
-    // build a fake clone of your stack button
-    let clone = new St.Widget({
-      layout_manager: new Clutter.BinLayout(),
-      width: w,
-      height: h,
-    });
-
-    let mainClone = new St.Icon({
-      icon_name: this.config.icon,
-      icon_size: 64,
-      x_align: Clutter.ActorAlign.CENTER,
-      y_align: Clutter.ActorAlign.CENTER,
-      opacity: isStarting ? 100 : 255, // dim it if downloading
-    });
-
-    clone.add_child(mainClone);
-
-    // slap the download overlay on the clone if a download just started
-    if (isStarting) {
-      let dlClone = new St.Icon({
-        icon_name: 'folder-download-symbolic',
-        icon_size: 32,
+    _createAutoIconWidget(fullPath) {
+      let grid = new St.BoxLayout({
+        vertical: true,
+        style_class: "stack-auto-icon",
         x_align: Clutter.ActorAlign.CENTER,
         y_align: Clutter.ActorAlign.CENTER,
       });
-      let overlayClone = new St.Bin({
-        style_class: "stack-overlay",
-        child: dlClone,
-        x_align: Clutter.ActorAlign.FILL,
-        y_align: Clutter.ActorAlign.FILL,
-      });
-      clone.add_child(overlayClone);
+
+      let icons = this._getGridIcons(fullPath);
+      let iconSize = 16;
+
+      for (let r = 0; r < 2; r++) {
+        let row = new St.BoxLayout({ style_class: "stack-auto-row" });
+        for (let c = 0; c < 2; c++) {
+          let i = r * 2 + c;
+          if (i < icons.length && icons[i]) {
+            row.add_child(
+              new St.Icon({
+                gicon: icons[i],
+                icon_size: iconSize,
+              }),
+            );
+          } else {
+            row.add_child(
+              new St.Widget({
+                width: iconSize,
+                height: iconSize,
+              }),
+            );
+          }
+        }
+        grid.add_child(row);
+      }
+      return grid;
     }
 
-    Main.uiGroup.add_child(clone);
-    clone.set_position(startX, startY);
+    _checkDownloads(path) {
+      if (this._scanTimeoutId) return;
 
-    // bounce animation: shoot up, then drop back down and fade out
-    clone.ease({
-      y: startY - 75, // how high it jumps
-      duration: 300,
-      mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-      onComplete: () => {
-        clone.ease({
-          y: startY,
-          opacity: 0,
-          duration: 400,
-          mode: Clutter.AnimationMode.EASE_IN_QUAD,
-          onComplete: () => clone.destroy()
+      this._scanTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+        try {
+          let dir = Gio.File.new_for_path(path);
+          let enumerator = dir.enumerate_children(
+            "standard::name",
+            Gio.FileQueryInfoFlags.NONE,
+            null,
+          );
+          let isDownloading = false;
+
+          let fileInfo;
+          while ((fileInfo = enumerator.next_file(null)) !== null) {
+            let name = fileInfo.get_name();
+            if (
+              name.endsWith(".part") ||
+              name.endsWith(".crdownload") ||
+              name.includes(".goutputstream")
+            ) {
+              isDownloading = true;
+              break;
+            }
+          }
+          enumerator.close(null);
+
+          if (isDownloading && this.downloadOverlay.opacity === 0) {
+            this.downloadOverlay.set_scale(1.5, 1.5);
+            this.downloadOverlay.ease({
+              opacity: 255,
+              scale_x: 1.0,
+              scale_y: 1.0,
+              duration: 200,
+              mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            });
+
+            this.mainIcon.ease({
+              opacity: 100,
+              duration: 200,
+              mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            });
+
+            this._triggerJumpIndicator(true);
+          } else if (!isDownloading && this.downloadOverlay.opacity === 255) {
+            this.downloadOverlay.ease({
+              opacity: 0,
+              scale_x: 1.5,
+              scale_y: 1.5,
+              duration: 200,
+              mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            });
+
+            this.mainIcon.ease({
+              opacity: 255,
+              duration: 200,
+              mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            });
+
+            this._triggerJumpIndicator(false);
+          }
+        } catch (e) {}
+
+        this._scanTimeoutId = null;
+        return GLib.SOURCE_REMOVE;
+      });
+    }
+
+    _triggerJumpIndicator(isStarting) {
+      if (Main.overview.visible) return;
+
+      let [startX, startY] = this.get_transformed_position();
+      let [width, height] = this.get_transformed_size();
+
+      let w = width > 0 ? width : 64;
+      let h = height > 0 ? height : 64;
+
+      let clone = new St.Widget({
+        layout_manager: new Clutter.BinLayout(),
+        width: w,
+        height: h,
+      });
+
+      let mainClone;
+      if (this.config.autoIcon) {
+        let resolvedPath = this.config.path.startsWith("~/")
+          ? GLib.get_home_dir() + this.config.path.substring(1)
+          : this.config.path;
+        mainClone = this._createAutoIconWidget(resolvedPath);
+      } else {
+        mainClone = new St.Icon({
+          icon_name: this.config.icon,
+          icon_size: 64,
+          x_align: Clutter.ActorAlign.CENTER,
+          y_align: Clutter.ActorAlign.CENTER,
         });
       }
-    });
-  }
+
+      mainClone.opacity = isStarting ? 100 : 255;
+      clone.add_child(mainClone);
+
+      if (isStarting) {
+        let dlClone = new St.Icon({
+          icon_name: "folder-download-symbolic",
+          icon_size: 32,
+          x_align: Clutter.ActorAlign.CENTER,
+          y_align: Clutter.ActorAlign.CENTER,
+        });
+        let overlayClone = new St.Bin({
+          style_class: "stack-overlay",
+          child: dlClone,
+          x_align: Clutter.ActorAlign.FILL,
+          y_align: Clutter.ActorAlign.FILL,
+        });
+        clone.add_child(overlayClone);
+      }
+
+      Main.uiGroup.add_child(clone);
+      clone.set_position(startX, startY);
+
+      clone.ease({
+        y: startY - 75,
+        duration: 300,
+        mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+        onComplete: () => {
+          clone.ease({
+            y: startY,
+            opacity: 0,
+            duration: 400,
+            mode: Clutter.AnimationMode.EASE_IN_QUAD,
+            onComplete: () => clone.destroy(),
+          });
+        },
+      });
+    }
 
     _createHeader(title) {
       let item = new PopupMenu.PopupBaseMenuItem({
-        style_class: "menu-header-item", 
+        style_class: "menu-header-item",
         reactive: false,
         can_focus: false,
       });
@@ -760,7 +872,7 @@ const StackButton = GObject.registerClass(
       this._menu.addMenuItem(this._createHeader("Rename"));
 
       let nameItem = new PopupMenu.PopupBaseMenuItem({
-        reactive: true, 
+        reactive: true,
         can_focus: true,
         style_class: "menu-input-row",
       });
@@ -784,6 +896,19 @@ const StackButton = GObject.registerClass(
 
       nameItem.add_child(nameEntry);
       this._menu.addMenuItem(nameItem);
+
+      this._menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+      // right-click toggle for auto icon
+      let autoIconToggle = new PopupMenu.PopupSwitchMenuItem(
+        "Auto-generate Grid Icon",
+        !!this.config.autoIcon
+      );
+      autoIconToggle.connect("toggled", (item, state) => {
+        this._updateConfig("autoIcon", state);
+        // changing settings should trigger your main class to rebuild the buttons automatically
+      });
+      this._menu.addMenuItem(autoIconToggle);
 
       this._menu.addMenuItem(this._createHeader("Change Icon"));
 
@@ -935,8 +1060,8 @@ const StackButton = GObject.registerClass(
       }
       if (this._tooltipTimeoutId > 0)
         GLib.source_remove(this._tooltipTimeoutId);
-      this.tooltip.destroy();
-      this._menu.destroy();
+      if (this.tooltip) this.tooltip.destroy();
+      if (this._menu) this._menu.destroy();
       super.destroy();
     }
   },
