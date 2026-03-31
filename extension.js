@@ -690,6 +690,8 @@ export default class DashStacksExtension extends Extension {
       let dashParent = dash._box.get_parent();
       if (this.dashScroll) return GLib.SOURCE_REMOVE;
 
+    //   this.dash.style = "padding-rigth: 10px;"
+
       this.dashScroll = new St.ScrollView({
         style_class: "dash-scroll-view",
         hscrollbar_policy: St.PolicyType.AUTOMATIC,
@@ -701,7 +703,8 @@ export default class DashStacksExtension extends Extension {
         height: 96,
       });
 
-      let maxWidth = global.stage.width - 76 * 2;
+      let monitor = Main.layoutManager.currentMonitor;
+        let maxWidth = monitor.width - 76 * 2;
       this.dashScroll.style = `max-width: ${maxWidth}px;`;
 
       this.dashWrapper = new St.BoxLayout({

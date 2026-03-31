@@ -133,6 +133,7 @@
 /* 1. Force the wrapper itself to be strictly 96px tall */
 .dash-scroll-wrapper {
   height: 96px !important;
+   /* padding-left: 10px; */
   /* padding-bottom: 8px;  */
 }
 
