@@ -503,7 +503,7 @@ const StackPopup = GObject.registerClass(
 
 const StackButton = GObject.registerClass(
   class StackButton extends St.Button {
-_init(stackConfig, settings, index) {
+    _init(stackConfig, settings, index) {
       super._init({
         style_class: "dash-stack-button dash-item-container",
         reactive: true,
@@ -629,19 +629,24 @@ _init(stackConfig, settings, index) {
         if (type === Clutter.EventType.TOUCH_BEGIN) {
           this._pressXY = [x, y];
           // start the "right click" timer (600ms feels better on pads)
-          this._longPressId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 600, () => {
-            this.tooltip.hide_tooltip();
-            this._menu.toggle();
-            this._longPressId = 0;
-            return GLib.SOURCE_REMOVE;
-          });
+          this._longPressId = GLib.timeout_add(
+            GLib.PRIORITY_DEFAULT,
+            600,
+            () => {
+              this.tooltip.hide_tooltip();
+              this._menu.toggle();
+              this._longPressId = 0;
+              return GLib.SOURCE_REMOVE;
+            },
+          );
           return Clutter.EVENT_STOP;
         }
 
         if (type === Clutter.EventType.TOUCH_UPDATE) {
           if (this._longPressId > 0) {
             const dist = Math.sqrt(
-              Math.pow(x - this._pressXY[0], 2) + Math.pow(y - this._pressXY[1], 2)
+              Math.pow(x - this._pressXY[0], 2) +
+                Math.pow(y - this._pressXY[1], 2),
             );
             // if they move more than 15px, it's a swipe, not a hold. kill it.
             if (dist > 15) {
@@ -677,8 +682,11 @@ _init(stackConfig, settings, index) {
       // keep this only for mouse users
       this.connect("button-press-event", (actor, event) => {
         // ignore synthesized touch events to avoid double-triggers
-        if (event.get_source_device().get_device_type() === Clutter.InputDeviceType.TOUCHSCREEN_DEVICE)
-            return Clutter.EVENT_PROPAGATE;
+        if (
+          event.get_source_device().get_device_type() ===
+          Clutter.InputDeviceType.TOUCHSCREEN_DEVICE
+        )
+          return Clutter.EVENT_PROPAGATE;
 
         const button = event.get_button();
         if (button === 1) {
@@ -691,11 +699,7 @@ _init(stackConfig, settings, index) {
         }
         return Clutter.EVENT_PROPAGATE;
       });
-
-        
-      }
-      
-    
+    }
 
     _getGridIcons(fullPath) {
       let icons = [];
@@ -719,8 +723,10 @@ _init(stackConfig, settings, index) {
 
           if (type === Gio.FileType.REGULAR) {
             let fileName = info.get_name();
-            if (fileName.endsWith('.desktop')) {
-              let appInfo = Gio.DesktopAppInfo.new_from_filename(`${fullPath}/${fileName}`);
+            if (fileName.endsWith(".desktop")) {
+              let appInfo = Gio.DesktopAppInfo.new_from_filename(
+                `${fullPath}/${fileName}`,
+              );
               if (appInfo && appInfo.get_icon()) {
                 icon = appInfo.get_icon();
               }
@@ -978,7 +984,7 @@ _init(stackConfig, settings, index) {
       // right-click toggle for auto icon
       let autoIconToggle = new PopupMenu.PopupSwitchMenuItem(
         "Auto-generate Grid Icon",
-        !!this.config.autoIcon
+        !!this.config.autoIcon,
       );
       autoIconToggle.connect("toggled", (item, state) => {
         this._updateConfig("autoIcon", state);
@@ -1144,31 +1150,33 @@ _init(stackConfig, settings, index) {
 );
 
 export default class DashStacksExtension extends Extension {
- enable() {
+  enable() {
     this._settings = this.getSettings();
-    
+
     const syncConfig = () => {
-        CONFIG.popupWidth = this._settings.get_int('popup-width');
-        CONFIG.popupHeight = this._settings.get_int('popup-height');
-        CONFIG.iconSize = this._settings.get_int('icon-size');
-        CONFIG.tooltipDelay = this._settings.get_int('tooltip-delay');
+      CONFIG.popupWidth = this._settings.get_int("popup-width");
+      CONFIG.popupHeight = this._settings.get_int("popup-height");
+      CONFIG.iconSize = this._settings.get_int("icon-size");
+      CONFIG.tooltipDelay = this._settings.get_int("tooltip-delay");
     };
-    
+
     syncConfig();
-    
+
     this._settingsSignal = this._settings.connect("changed::stacks", () => {
       this._injectStacks();
     });
     this._buttons = [];
     this._boxSignals = [];
     this._configSignals = [];
-    ['popup-width', 'popup-height', 'icon-size', 'tooltip-delay'].forEach(key => {
+    ["popup-width", "popup-height", "icon-size", "tooltip-delay"].forEach(
+      (key) => {
         let sig = this._settings.connect(`changed::${key}`, () => {
-            syncConfig();
-            this._injectStacks();
+          syncConfig();
+          this._injectStacks();
         });
         this._configSignals.push(sig);
-    });
+      },
+    );
 
     let dash = Main.overview.dash;
     this._originalRedisplay = dash._redisplay;
@@ -1237,62 +1245,74 @@ export default class DashStacksExtension extends Extension {
 
       this.dashScroll.reactive = true;
       this.dashWrapper.reactive = true;
-this.dashScroll.connect("captured-event", (actor, event) => {
-    let type = event.type();
-    let adj = this.dashScroll.hadjustment;
+      this.dashScroll.connect("captured-event", (actor, event) => {
+        let type = event.type();
+        let adj = this.dashScroll.hadjustment;
 
-    if (type === Clutter.EventType.SCROLL) {
-        let source = event.get_scroll_source();
-        if (source !== Clutter.ScrollSource.WHEEL) return Clutter.EVENT_PROPAGATE;
+        if (type === Clutter.EventType.SCROLL) {
+          let source = event.get_scroll_source();
+          if (source !== Clutter.ScrollSource.WHEEL)
+            return Clutter.EVENT_PROPAGATE;
 
-        let direction = event.get_scroll_direction();
-        let scrollAmount = 76;
-        if (direction === Clutter.ScrollDirection.UP || direction === Clutter.ScrollDirection.LEFT) adj.value -= scrollAmount;
-        else if (direction === Clutter.ScrollDirection.DOWN || direction === Clutter.ScrollDirection.RIGHT) adj.value += scrollAmount;
+          let direction = event.get_scroll_direction();
+          let scrollAmount = 76;
+          if (
+            direction === Clutter.ScrollDirection.UP ||
+            direction === Clutter.ScrollDirection.LEFT
+          )
+            adj.value -= scrollAmount;
+          else if (
+            direction === Clutter.ScrollDirection.DOWN ||
+            direction === Clutter.ScrollDirection.RIGHT
+          )
+            adj.value += scrollAmount;
 
-        return Clutter.EVENT_STOP;
-    }
+          return Clutter.EVENT_STOP;
+        }
 
-    // --- TOUCH BEGIN (YOU DELETED THIS) ---
-    if (type === Clutter.EventType.TOUCH_BEGIN) {
-        let [x, y] = event.get_coords();
-        dashTouchStartX = x;
-        dashLastTouchX = x;
-        dashIsDragging = false;
-        // let it propagate so buttons know a touch started
-        return Clutter.EVENT_PROPAGATE; 
-    }
+        // --- TOUCH BEGIN (YOU DELETED THIS) ---
+        if (type === Clutter.EventType.TOUCH_BEGIN) {
+          let [x, y] = event.get_coords();
+          dashTouchStartX = x;
+          dashLastTouchX = x;
+          dashIsDragging = false;
+          // let it propagate so buttons know a touch started
+          return Clutter.EVENT_PROPAGATE;
+        }
 
-    if (type === Clutter.EventType.TOUCH_UPDATE) {
-        if (dashTouchStartX === null) return Clutter.EVENT_PROPAGATE;
-        let [x, y] = event.get_coords();
-        let dx = dashLastTouchX - x;
-        
-        if (!dashIsDragging && Math.abs(dashTouchStartX - x) > 10) {
+        if (type === Clutter.EventType.TOUCH_UPDATE) {
+          if (dashTouchStartX === null) return Clutter.EVENT_PROPAGATE;
+          let [x, y] = event.get_coords();
+          let dx = dashLastTouchX - x;
+
+          if (!dashIsDragging && Math.abs(dashTouchStartX - x) > 10) {
             dashIsDragging = true;
             // tell the system this scrollview OWNS the pointer now
             // this sends the TOUCH_CANCEL to your buttons
-            Clutter.grab_pointer(this.dashScroll); 
-        }
+            Clutter.grab_pointer(this.dashScroll);
+          }
 
-        if (dashIsDragging) {
+          if (dashIsDragging) {
             adj.value += dx;
             dashLastTouchX = x;
-            return Clutter.EVENT_STOP; 
-        }
-    }
-
-    if (type === Clutter.EventType.TOUCH_END || type === Clutter.EventType.TOUCH_CANCEL) {
-        dashTouchStartX = null;
-        if (dashIsDragging) {
-            dashIsDragging = false;
-            Clutter.ungrab_pointer(); 
             return Clutter.EVENT_STOP;
+          }
         }
-    }
 
-    return Clutter.EVENT_PROPAGATE;
-});
+        if (
+          type === Clutter.EventType.TOUCH_END ||
+          type === Clutter.EventType.TOUCH_CANCEL
+        ) {
+          dashTouchStartX = null;
+          if (dashIsDragging) {
+            dashIsDragging = false;
+            Clutter.ungrab_pointer();
+            return Clutter.EVENT_STOP;
+          }
+        }
+
+        return Clutter.EVENT_PROPAGATE;
+      });
 
       let showApps = dash.showAppsButton;
       dashBox.remove_child(showApps);
@@ -1424,10 +1444,10 @@ this.dashScroll.connect("captured-event", (actor, event) => {
 
   disable() {
     if (this._configSignals) {
-        this._configSignals.forEach(sig => this._settings.disconnect(sig));
-        this._configSignals = [];
+      this._configSignals.forEach((sig) => this._settings.disconnect(sig));
+      this._configSignals = [];
     }
-    
+
     if (this._monitorsChangedId) {
       Main.layoutManager.disconnect(this._monitorsChangedId);
       this._monitorsChangedId = null;
