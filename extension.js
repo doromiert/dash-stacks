@@ -1,3 +1,4 @@
+import { AppFolderPins } from "./appFolders.js";
 import * as DND from "resource:///org/gnome/shell/ui/dnd.js";
 import Clutter from "gi://Clutter";
 import Gio from "gi://Gio";
@@ -1132,6 +1133,13 @@ const StackButton = GObject.registerClass(
     }
 
     destroy() {
+      if (this._capturedEventId) global.stage.disconnect(this._capturedEventId);
+      if (this.popup) {
+        this.popup.remove_all_transitions();
+        this.popup.destroy();
+        this.popup = null;
+      }
+      if (this._longPressId) GLib.source_remove(this._longPressId);
       if (this._scanTimeoutId) {
         GLib.source_remove(this._scanTimeoutId);
         this._scanTimeoutId = null;
@@ -1151,6 +1159,7 @@ const StackButton = GObject.registerClass(
 
 export default class DashStacksExtension extends Extension {
   enable() {
+    if (this._settings) return;
     this._settings = this.getSettings();
 
     const syncConfig = () => {
@@ -1168,6 +1177,7 @@ export default class DashStacksExtension extends Extension {
     this._buttons = [];
     this._boxSignals = [];
     this._configSignals = [];
+    this._appFolderPins = new AppFolderPins(this._settings, () => this._injectStacks());
     ["popup-width", "popup-height", "icon-size", "tooltip-delay"].forEach(
       (key) => {
         let sig = this._settings.connect(`changed::${key}`, () => {
@@ -1189,13 +1199,6 @@ export default class DashStacksExtension extends Extension {
     dash._redisplay = () => {
       this._originalRedisplay.call(dash);
       this._injectStacks();
-      if (
-        this.masterLayout &&
-        dash.showAppsButton.get_parent() !== this.masterLayout
-      ) {
-        dash._box.remove_child(dash.showAppsButton);
-        this.masterLayout.add_child(dash.showAppsButton);
-      }
     };
 
     if (dash._box) {
@@ -1209,7 +1212,8 @@ export default class DashStacksExtension extends Extension {
 
     this._injectStacks();
 
-    GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+    this._layoutIdleId = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+      this._layoutIdleId = null;
       let dash = Main.overview.dash;
       let dashBox = dash._box;
       let dashParent = dashBox.get_parent();
@@ -1314,8 +1318,11 @@ export default class DashStacksExtension extends Extension {
         return Clutter.EVENT_PROPAGATE;
       });
 
-      let showApps = dash.showAppsButton;
-      dashBox.remove_child(showApps);
+      // Keep GNOME's ShowAppsIcon container intact (the toggle button is its child).
+      const showApps = dash._showAppsIcon;
+      this._showAppsParent = showApps.get_parent();
+      this._showAppsIndex = this._showAppsParent.get_children().indexOf(showApps);
+      this._showAppsParent.remove_child(showApps);
 
       dashParent.remove_child(dashBox);
       this.dashWrapper.add_child(dashBox);
@@ -1343,27 +1350,37 @@ export default class DashStacksExtension extends Extension {
   }
 
   _injectStacks() {
-    this._buttons.forEach((b) => {
-      if (b.popup) b._closePopup();
-      b.destroy();
-    });
-    this._buttons = [];
+    if (this._injecting || !this._settings || this._appFolderPins?.hasOpenDialog()) return;
+    this._injecting = true;
+    try {
+      this._buttons.forEach((b) => {
+        b.destroy();
+      });
+      this._buttons = [];
 
-    const stacks = this._getStacksConfig();
-    if (stacks.length === 0) return;
+      const stacks = this._getStacksConfig();
+      const appFolders = this._appFolderPins.createButtons();
+      if (stacks.length === 0 && appFolders.length === 0) return;
 
-    let separator = new St.Widget({
-      style_class: "dash-stacks-separator",
-      y_align: Clutter.ActorAlign.CENTER,
-    });
-    this._buttons.push(separator);
-    Main.overview.dash._box.add_child(separator);
+      let separator = new St.Widget({
+        style_class: "dash-stacks-separator",
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+      this._buttons.push(separator);
+      Main.overview.dash._box.add_child(separator);
 
-    stacks.forEach((stack, index) => {
-      let btn = new StackButton(stack, this._settings, index);
-      this._buttons.push(btn);
-      Main.overview.dash._box.add_child(btn);
-    });
+      stacks.forEach((stack, index) => {
+        let btn = new StackButton(stack, this._settings, index);
+        this._buttons.push(btn);
+        Main.overview.dash._box.add_child(btn);
+      });
+      for (const button of appFolders) {
+        this._buttons.push(button);
+        Main.overview.dash._box.add_child(button);
+      }
+    } finally {
+      this._injecting = false;
+    }
   }
 
   _enforceLayout() {
@@ -1400,6 +1417,9 @@ export default class DashStacksExtension extends Extension {
             child.set_margin_left(6);
             child.set_margin_right(6);
             totalWidth += 13;
+          } else if (c.has_style_class_name("dash-stack-button")) {
+            c.set_size(76, 76);
+            totalWidth += 76;
           } else {
             c.set_width(80);
             child.set_width(76);
@@ -1421,10 +1441,6 @@ export default class DashStacksExtension extends Extension {
       this._enforceTimeoutId = null;
       return GLib.SOURCE_REMOVE;
     });
-    let paddingForShowApps = 80;
-
-    dash._box.set_width(totalWidth + paddingForShowApps);
-    this.dashWrapper.set_width(totalWidth + paddingForShowApps);
   }
 
   _getStacksConfig() {
@@ -1443,7 +1459,13 @@ export default class DashStacksExtension extends Extension {
   }
 
   disable() {
-    if (this._configSignals) {
+    for (const key of ["_layoutIdleId", "_enforceTimeoutId"]) {
+      if (this[key]) GLib.source_remove(this[key]);
+      this[key] = null;
+    }
+    this._appFolderPins?.destroy();
+    this._appFolderPins = null;
+    if (this._configSignals && this._settings) {
       this._configSignals.forEach((sig) => this._settings.disconnect(sig));
       this._configSignals = [];
     }
@@ -1453,7 +1475,8 @@ export default class DashStacksExtension extends Extension {
       this._monitorsChangedId = null;
     }
 
-    if (this._settingsSignal) this._settings.disconnect(this._settingsSignal);
+    if (this._settingsSignal && this._settings) this._settings.disconnect(this._settingsSignal);
+    this._settingsSignal = null;
     this._settings = null;
 
     if (this._originalRedisplay)
@@ -1479,8 +1502,8 @@ export default class DashStacksExtension extends Extension {
       if (dashParent) {
         this.dashWrapper.remove_child(dash._box);
 
-        this.masterLayout.remove_child(dash.showAppsButton);
-        dash._box.add_child(dash.showAppsButton);
+        this.masterLayout.remove_child(dash._showAppsIcon);
+        this._showAppsParent.insert_child_at_index(dash._showAppsIcon, this._showAppsIndex);
 
         dashParent.insert_child_at_index(dash._box, 0);
         dashParent.remove_child(this.masterLayout);

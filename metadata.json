@@ -3,6 +3,7 @@
   "description": "macos style folder stacks in the dash.",
   "uuid": "dash-stacks@neg-zero.com",
   "shell-version": [
+    "50",
     "49",
     "48"
   ],
