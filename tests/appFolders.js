@@ -22,12 +22,14 @@ export async function run(extension) {
     view._redisplay();
     await delay(200);
     Main.overview.showApps();
+    Main.overview.dash.showAppsButton.checked = true;
     await delay(700);
     const gridFolder = () => view.getAllItems().find(i => i.id === 'stacks-test');
     const dockFolder = () => extension._buttons.find(i => i.id === 'stacks-test');
     view._redisplay();
     await delay(200);
     assert(gridFolder(), 'folder initially missing from grid: ' + JSON.stringify({children:folders.get_strv('folder-children'), members:folder.get_strv('apps'), pins:settings.get_strv('pinned-app-folders'), favorites:global.settings.get_strv('favorite-apps'), items:view.getAllItems().map(i => i.id), infos:view.getAppInfos().map(i => i.get_id())}));
+    assert(gridFolder().mapped, 'app grid folder is not on screen');
     const members = folder.get_strv('apps');
     const baselineMenu = extension._appFolderPins._menus.get(gridFolder());
     baselineMenu.rightClick.emit('recognize');
@@ -103,6 +105,7 @@ export async function run(extension) {
     settings.set_strv('pinned-app-folders', ['stacks-test']);
     await delay(100);
     Main.overview.showApps();
+    Main.overview.dash.showAppsButton.checked = true;
     await delay(400);
     dockFolder().add_style_pseudo_class('hover');
     extension._buttons.find(i => i.config).add_style_pseudo_class('hover');
