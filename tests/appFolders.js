@@ -6,9 +6,17 @@ import * as Dash from 'resource:///org/gnome/shell/ui/dash.js';
 import * as DND from 'resource:///org/gnome/shell/ui/dnd.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 const delay = ms => new Promise(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => {resolve(); return GLib.SOURCE_REMOVE;}));
+const waitFor = async (condition, message) => {
+    const deadline = GLib.get_monotonic_time() + 15_000_000;
+    while (!condition()) {
+        if (GLib.get_monotonic_time() >= deadline) throw new Error(message);
+        await delay(20);
+    }
+};
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 export async function run(extension) {
     global.force_animations = true;
+    await waitFor(() => !Main.layoutManager._startingUp, 'Shell startup did not finish');
     const view = Main.overview._overview.controls.appDisplay;
     const dash = Main.overview.dash;
     const settings = extension.getSettings();
@@ -26,7 +34,10 @@ export async function run(extension) {
     const appButton = () => buttons().find(i => i.config.appFolder === 'stacks-test');
     const gridFolder = () => view.getAllItems().find(i => i.id === 'stacks-test');
     const configs = () => JSON.parse(settings.get_string('stacks'));
-    assert(gridFolder()?.mapped,'initial folder not in visible app grid');
+    await waitFor(() => gridFolder(), 'initial folder missing from app grid');
+    view.goToPage(view._grid.getItemPage(gridFolder()), false);
+    await waitFor(() => gridFolder()?.mapped && !Main.overview.animationInProgress,
+        'initial folder not in visible app grid');
     const menu = extension._appFolderPins._menus.get(gridFolder());
     menu.rightClick.emit('recognize');
     assert(menu.menu.isOpen,'right-click pin action missing');
