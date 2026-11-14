@@ -9,14 +9,18 @@ Well guess what, this extension does just that... and makes it so that the dash 
 
 ## Pin app-grid folders
 
-Right-click an app folder in the app grid and choose **Pin to Dock**. The folder
-then appears beside your directory stacks and leaves the app grid. Click it to
-open the normal GNOME folder dialog. Right-click it and choose **Unpin from
-Dock** to return it to the grid. Keyboard context menus and touch long-press
-work too. Folder membership is never deleted or copied: renaming and editing
-the original GNOME folder keeps the dock preview current. Search still finds
-its apps. Disabling Dash Stacks restores all folders to the app grid.
+Right-click an app folder and choose **Pin to Dock**, or drag it into the dock.
+App folders use the same stack popup, icon picker and **Show Folder Contents**
+preview toggle as directory stacks. Right-click **Unpin from Dock**, or drag the
+stack back to the app grid, to restore it. Drag stacks to reorder them; dragging
+back out never deletes folder contents. You can also pin a subfolder from an
+existing directory stack popup by dragging it into the dock.
 
-Pins are stored per user as folder IDs in the `pinned-app-folders` setting.
-Runtime acceptance is exercised by `tests/appFolders.js` in a real GNOME50
-VM through ZenPkgs' `dash-stacks-vm` check.
+App-folder entries live in the existing `stacks` setting with an `appFolder` ID
+in place of `path`. The earlier separate pin list is migrated automatically.
+Native GNOME folder membership and search remain intact. Stacks use native dock
+containers, theme states and tooltips to match ordinary pinned apps.
+
+`tests/appFolders.js`, run by ZenPkgs' `dash-stacks-vm`, checks the actual GNOME
+actors, unified popup/contents toggle, migration, DND handlers and cancellation,
+normal-pin theme/tooltip parity and square bounds at normal/doubled scale.

@@ -59,14 +59,15 @@ export default class DashStacksPreferences extends ExtensionPreferences {
                     save(stacks);
                 });
 
-                let pathEntry = new Adw.EntryRow({ title: 'Path', text: stack.path });
+                let pathEntry = new Adw.EntryRow({ title: stack.appFolder ? 'App Folder' : 'Path', text: stack.appFolder || stack.path });
+                pathEntry.sensitive = !stack.appFolder;
                 pathEntry.connect('changed', () => {
                     stacks[index].path = pathEntry.text;
                     save(stacks);
                 });
 
                 let autoIconRow = new Adw.SwitchRow({ 
-                    title: 'Auto-generate Grid Icon',
+                    title: 'Show Folder Contents',
                     subtitle: 'Creates an icon based on folder contents'
                 });
                 autoIconRow.active = !!stack.autoIcon;
@@ -98,7 +99,7 @@ export default class DashStacksPreferences extends ExtensionPreferences {
 
                 row.add_row(nameEntry);
                 row.add_row(autoIconRow);
-                row.add_row(pathEntry);
+                if (!stack.appFolder) row.add_row(pathEntry);
                 row.add_row(iconEntry);
                 row.add_row(deleteBtn);
                 group.add(row);

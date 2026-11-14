@@ -4,13 +4,13 @@
     <key name="stacks" type="s">
       <default>'[{"name":"Downloads","path":"~/Downloads","icon":"folder-download","autoIcon":false},{"name":"Projects","path":"~/Documents","icon":"folder-documents","autoIcon":false}]'</default>
       <summary>Stacks Configuration</summary>
-      <description>JSON string containing the stacks configuration array.</description>
+      <description>JSON stack entries with name, path or appFolder, icon and autoIcon.</description>
     </key>
 
     <key name="pinned-app-folders" type="as">
       <default>[]</default>
-      <summary>App folders pinned to the dock</summary>
-      <description>GNOME app-folder IDs hidden from the app grid while pinned. Folder contents are preserved.</description>
+      <summary>Legacy app-folder pins</summary>
+      <description>Read once to migrate old IDs into stacks; new app-folder pins use the existing stacks list.</description>
     </key>
 
     <key name="popup-width" type="i">

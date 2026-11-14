@@ -1,4 +1,6 @@
 import { AppFolderPins } from "./appFolders.js";
+import * as IconGrid from "resource:///org/gnome/shell/ui/iconGrid.js";
+import * as Dash from "resource:///org/gnome/shell/ui/dash.js";
 import * as DND from "resource:///org/gnome/shell/ui/dnd.js";
 import Clutter from "gi://Clutter";
 import Gio from "gi://Gio";
@@ -16,52 +18,6 @@ let CONFIG = {
   iconSize: 48,
   tooltipDelay: 500, // ms
 };
-
-const StackTooltip = GObject.registerClass(
-  class StackTooltip extends St.Label {
-    _init(text) {
-      super._init({
-        text,
-        style_class: "dash-label stack-tooltip",
-        visible: false,
-        y_align: Clutter.ActorAlign.CENTER,
-      });
-      // fix for "glitchy" text: ensure pango doesn't clip
-      this.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
-      this.clutter_text.line_wrap = false;
-      Main.layoutManager.addTopChrome(this);
-    }
-
-    show_for_actor(actor) {
-      const [x, y] = actor.get_transformed_position();
-      const [w, h] = actor.get_transformed_size();
-
-      this.opacity = 0;
-      this.show();
-
-      const labelWidth = this.get_width();
-      this.set_position(
-        Math.floor(x + w / 2 - labelWidth / 2),
-        Math.floor(y - this.get_height() - 8),
-      );
-
-      this.ease({
-        opacity: 255,
-        duration: 150,
-        mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-      });
-    }
-
-    hide_tooltip() {
-      this.ease({
-        opacity: 0,
-        duration: 100,
-        mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-        onComplete: () => this.hide(),
-      });
-    }
-  },
-);
 
 const CalloutArrow = GObject.registerClass(
   class CalloutArrow extends St.DrawingArea {
@@ -85,7 +41,7 @@ const CalloutArrow = GObject.registerClass(
 
 const StackItem = GObject.registerClass(
   class StackItem extends St.Button {
-    _init(fileInfo, dirPath, popupRef) {
+    _init(fileInfo, dirPath, popupRef, shellApp = null) {
       super._init({
         style_class: "stack-item",
         reactive: true,
@@ -99,6 +55,7 @@ const StackItem = GObject.registerClass(
       const fileName = fileInfo.get_name();
       this.path = dirPath + "/" + fileName;
       let isDir = fileInfo.get_file_type() === Gio.FileType.DIRECTORY;
+      this._folderPath = isDir ? this.path : null;
       let isApp = fileName.endsWith(".desktop");
 
       let isDownloading = false;
@@ -142,7 +99,7 @@ const StackItem = GObject.registerClass(
 
       // grab the real app name and icon if it's a desktop file
       if (isApp) {
-        let appInfo = Gio.DesktopAppInfo.new_from_filename(this.path);
+        let appInfo = shellApp?.get_app_info() ?? Gio.DesktopAppInfo.new_from_filename(this.path);
         if (appInfo) {
           displayName = appInfo.get_name() || displayName;
           displayIcon = appInfo.get_icon() || displayIcon;
@@ -212,8 +169,11 @@ const StackItem = GObject.registerClass(
         if (isDir) {
           popupRef._navigate(this.path, fileName);
         } else if (isApp) {
-          let app = Gio.DesktopAppInfo.new_from_filename(this.path);
-          if (app) app.launch([], null);
+          if (shellApp) shellApp.activate();
+          else {
+            let app = Gio.DesktopAppInfo.new_from_filename(this.path);
+            if (app) app.launch([], null);
+          }
           Main.overview.hide();
           popupRef.sourceActor._closePopup();
         } else {
@@ -230,40 +190,10 @@ const StackItem = GObject.registerClass(
       });
 
       draggable.connect("drag-begin", () => {
-        let fileUri = Gio.File.new_for_path(
-          dirPath + "/" + fileInfo.get_name(),
-        ).get_uri();
-        let clipboard = St.Clipboard.get_default();
-        clipboard.set_text(St.ClipboardType.CLIPBOARD, fileUri + "\r\n");
-
-        if (popupRef && popupRef.sourceActor) {
-          popupRef.sourceActor._closePopup();
-        }
+        Main.overview.beginItemDrag(this);
       });
+      draggable.connect("drag-end", () => Main.overview.endItemDrag(this));
 
-      draggable.connect("drag-end", () => {
-        let fileName = fileInfo.get_name();
-        let filePath = dirPath + "/" + fileName;
-
-        try {
-          if (fileName.endsWith(".desktop")) {
-            let appInfo = Gio.DesktopAppInfo.new_from_filename(filePath);
-            if (appInfo) appInfo.launch([], null);
-          } else {
-            let file = Gio.File.new_for_path(filePath);
-            Gio.AppInfo.launch_default_for_uri_async(
-              file.get_uri(),
-              null,
-              null,
-              null,
-            );
-          }
-        } catch (e) {
-          console.error(
-            `Dash Stacks: Failed to open dragged item - ${e.message}`,
-          );
-        }
-      });
     }
   },
 );
@@ -279,6 +209,10 @@ const StackPopup = GObject.registerClass(
       });
 
       this.sourceActor = sourceActor;
+      this.connect("destroy", () => {
+        if (this._loadIdleId) GLib.source_remove(this._loadIdleId);
+        this._loadIdleId = 0;
+      });
       this.history = [{ path: stackConfig.path, name: stackConfig.name }];
       this.set_pivot_point(0.5, 1.0);
 
@@ -338,6 +272,7 @@ const StackPopup = GObject.registerClass(
       this.header.add_child(this.backBtn);
       this.header.add_child(this.titleLabel);
       this.header.add_child(this.nautilusBtn);
+      this.nautilusBtn.visible = !sourceActor._appFolder;
       contentBox.add_child(this.header);
 
       this.scroll = new St.ScrollView({
@@ -468,7 +403,22 @@ const StackPopup = GObject.registerClass(
 
       this.grid.destroy_all_children();
 
-      GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+      if (this.sourceActor._appFolder) {
+        const items = this.sourceActor._appFolder.apps.map(app => {
+          const appInfo = app.get_app_info();
+          const filename = appInfo.get_filename();
+          const info = new Gio.FileInfo();
+          info.set_name(GLib.path_get_basename(filename));
+          info.set_file_type(Gio.FileType.REGULAR);
+          info.set_icon(appInfo.get_icon() ?? Gio.ThemedIcon.new("application-x-executable"));
+          return new StackItem(info, GLib.path_get_dirname(filename), this, app);
+        });
+        this._renderItems(items);
+        return;
+      }
+      if (this._loadIdleId) GLib.source_remove(this._loadIdleId);
+      this._loadIdleId = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+        this._loadIdleId = 0;
         let dir = Gio.File.new_for_path(current.path);
         try {
           let enumerator = dir.enumerate_children(
@@ -484,29 +434,29 @@ const StackPopup = GObject.registerClass(
             items.push(new StackItem(info, current.path, this));
           }
 
-          const COLS = 4;
-          let currentRow = null;
-          items.forEach((item, index) => {
-            if (index % COLS === 0) {
-              currentRow = new St.BoxLayout({ style: "spacing: 12px;" });
-              this.grid.add_child(currentRow);
-            }
-            currentRow.add_child(item);
-          });
+          this._renderItems(items);
+          enumerator.close(null);
         } catch (e) {
           console.error(`[dash-stacks] error: ${e}`);
         }
         return GLib.SOURCE_REMOVE;
       });
     }
+    _renderItems(items) {
+      items.forEach((item, index) => {
+        if (index % 4 === 0) this.grid.add_child(new St.BoxLayout({style: "spacing: 12px;"}));
+        this.grid.get_last_child().add_child(item);
+      });
+    }
+
   },
 );
 
 const StackButton = GObject.registerClass(
   class StackButton extends St.Button {
-    _init(stackConfig, settings, index) {
+    _init(stackConfig, settings, index, pins) {
       super._init({
-        style_class: "dash-stack-button dash-item-container",
+        style_class: "overview-tile dash-stack-button",
         reactive: true,
         track_hover: true,
         can_focus: true,
@@ -515,28 +465,86 @@ const StackButton = GObject.registerClass(
       });
 
       this.config = stackConfig;
+      this._pins = pins;
+      this._appFolder = stackConfig.appFolder ? pins.getFolder(stackConfig.appFolder) : null;
+      this._dashStack = true;
+      this._delegate = this;
+      this.connect("destroy", () => this._onDestroy());
       this._settings = settings;
       this._index = index;
       this._tooltipTimeoutId = 0;
 
-      let resolvedPath = this.config.path.startsWith("~/")
+      let resolvedPath = this.config.path?.startsWith("~/")
         ? GLib.get_home_dir() + this.config.path.substring(1)
-        : this.config.path;
+        : (this.config.path ?? "");
 
+      this._resolvedPath = resolvedPath;
+      this.icon = new IconGrid.BaseIcon(stackConfig.name, {
+        createIcon: this._createIcon.bind(this), setSizeManually: true, showLabel: false,
+      });
+      this.icon.setIconSize(64);
+      this.set_child(this.icon);
+
+      if (!this._appFolder) {
+      this._dirMonitor = Gio.File.new_for_path(resolvedPath).monitor_directory(
+        Gio.FileMonitorFlags.NONE,
+        null,
+      );
+      this._dirMonitor.connect("changed", () =>
+        this._checkDownloads(resolvedPath),
+      );
+      this._checkDownloads(resolvedPath);
+
+      }
+      this._menuManager = new PopupMenu.PopupMenuManager(this);
+      this._menu = new PopupMenu.PopupMenu(this, 0.5, St.Side.BOTTOM);
+      this._menu.actor.add_style_class_name("dash-stacks-context-menu");
+      this._menuManager.addMenu(this._menu);
+      Main.uiGroup.add_child(this._menu.actor);
+      this._menu.actor.hide();
+
+      this._buildMenu();
+
+      this._draggable = DND.makeDraggable(this, {timeoutThreshold: 200});
+      this._draggable.connect("drag-begin", () => {
+        this._dragging = true;
+        this._closePopup();
+        Main.overview.beginItemDrag(this);
+      });
+      this._draggable.connect("drag-end", () => {
+        this._dragging = false;
+        Main.overview.endItemDrag(this);
+      });
+      this.connect("clicked", () => { if (!this._dragging) this._togglePopup(); });
+      const openMenu = () => {
+        this._dashItem?.hideLabel();
+        this._menu.toggle();
+      };
+      this.connect("popup-menu", openMenu);
+      const rightClick = new Clutter.ClickGesture({required_button: Clutter.BUTTON_SECONDARY, recognize_on_press: true});
+      rightClick.connect("recognize", openMenu);
+      this.add_action(rightClick);
+      const longPress = new Clutter.LongPressGesture();
+      longPress.connect("recognize", openMenu);
+      this.add_action(longPress);
+
+    }
+
+    _createIcon(size) {
       let iconBin = new St.Widget({
         layout_manager: new Clutter.BinLayout(),
-        width: 64,
-        height: 64,
+        width: size * St.ThemeContext.get_for_stage(global.stage).scale_factor,
+        height: size * St.ThemeContext.get_for_stage(global.stage).scale_factor,
         x_align: Clutter.ActorAlign.CENTER,
         y_align: Clutter.ActorAlign.CENTER,
       });
 
       if (this.config.autoIcon) {
-        this.mainIcon = this._createAutoIconWidget(resolvedPath);
+        this.mainIcon = this._createAutoIconWidget(this._resolvedPath, size);
       } else {
         this.mainIcon = new St.Icon({
-          icon_name: stackConfig.icon,
-          icon_size: 64,
+          icon_name: this.config.icon,
+          icon_size: size,
           x_expand: true,
           y_expand: true,
           x_align: Clutter.ActorAlign.CENTER,
@@ -566,143 +574,22 @@ const StackButton = GObject.registerClass(
       this.downloadOverlay.set_child(this.dlIcon);
       iconBin.add_child(this.mainIcon);
       iconBin.add_child(this.downloadOverlay);
-      this.set_child(iconBin);
+      return iconBin;
 
-      this.tooltip = new StackTooltip(stackConfig.name);
+    }
 
-      this._dirMonitor = Gio.File.new_for_path(resolvedPath).monitor_directory(
-        Gio.FileMonitorFlags.NONE,
-        null,
-      );
-      this._dirMonitor.connect("changed", () =>
-        this._checkDownloads(resolvedPath),
-      );
-      this._checkDownloads(resolvedPath);
-
-      this.connect("notify::hover", () => {
-        if (this.hover) {
-          this._tooltipTimeoutId = GLib.timeout_add(
-            GLib.PRIORITY_DEFAULT,
-            CONFIG.tooltipDelay,
-            () => {
-              this.tooltip.show_for_actor(this);
-              this._tooltipTimeoutId = 0;
-              return GLib.SOURCE_REMOVE;
-            },
-          );
-        } else {
-          if (this._tooltipTimeoutId > 0) {
-            GLib.source_remove(this._tooltipTimeoutId);
-            this._tooltipTimeoutId = 0;
-          }
-          this.tooltip.hide_tooltip();
-        }
-      });
-
-      this._menuManager = new PopupMenu.PopupMenuManager(this);
-      this._menu = new PopupMenu.PopupMenu(this, 0.5, St.Side.BOTTOM);
-      this._menu.actor.add_style_class_name("dash-stacks-context-menu");
-      this._menuManager.addMenu(this._menu);
-      Main.uiGroup.add_child(this._menu.actor);
-      this._menu.actor.hide();
-
-      this._buildMenu();
-
-      this.connect("button-press-event", (actor, event) => {
-        const button = event.get_button();
-        if (button === 1) {
-          this._togglePopup();
-          return Clutter.EVENT_STOP;
-        } else if (button === 3) {
-          this.tooltip.hide_tooltip();
-          this._menu.toggle();
-          return Clutter.EVENT_STOP;
-        }
-        return Clutter.EVENT_PROPAGATE;
-      });
-      this._longPressId = 0;
-      this._pressXY = [0, 0];
-
-      this.connect("touch-event", (actor, event) => {
-        const [x, y] = event.get_coords();
-        const type = event.type();
-
-        if (type === Clutter.EventType.TOUCH_BEGIN) {
-          this._pressXY = [x, y];
-          // start the "right click" timer (600ms feels better on pads)
-          this._longPressId = GLib.timeout_add(
-            GLib.PRIORITY_DEFAULT,
-            600,
-            () => {
-              this.tooltip.hide_tooltip();
-              this._menu.toggle();
-              this._longPressId = 0;
-              return GLib.SOURCE_REMOVE;
-            },
-          );
-          return Clutter.EVENT_STOP;
-        }
-
-        if (type === Clutter.EventType.TOUCH_UPDATE) {
-          if (this._longPressId > 0) {
-            const dist = Math.sqrt(
-              Math.pow(x - this._pressXY[0], 2) +
-                Math.pow(y - this._pressXY[1], 2),
-            );
-            // if they move more than 15px, it's a swipe, not a hold. kill it.
-            if (dist > 15) {
-              GLib.source_remove(this._longPressId);
-              this._longPressId = 0;
-            }
-          }
-          // CRITICAL: stop propagation so Mutter doesn't steal the gesture
-          return Clutter.EVENT_STOP;
-        }
-
-        if (type === Clutter.EventType.TOUCH_END) {
-          if (this._longPressId > 0) {
-            // it was a quick tap
-            GLib.source_remove(this._longPressId);
-            this._longPressId = 0;
-            this._togglePopup();
-          }
-          return Clutter.EVENT_STOP;
-        }
-
-        if (type === Clutter.EventType.TOUCH_CANCEL) {
-          if (this._longPressId > 0) {
-            GLib.source_remove(this._longPressId);
-            this._longPressId = 0;
-          }
-          return Clutter.EVENT_STOP;
-        }
-
-        return Clutter.EVENT_PROPAGATE;
-      });
-
-      // keep this only for mouse users
-      this.connect("button-press-event", (actor, event) => {
-        // ignore synthesized touch events to avoid double-triggers
-        if (
-          event.get_source_device().get_device_type() ===
-          Clutter.InputDeviceType.TOUCHSCREEN_DEVICE
-        )
-          return Clutter.EVENT_PROPAGATE;
-
-        const button = event.get_button();
-        if (button === 1) {
-          this._togglePopup();
-          return Clutter.EVENT_STOP;
-        } else if (button === 3) {
-          this.tooltip.hide_tooltip();
-          this._menu.toggle();
-          return Clutter.EVENT_STOP;
-        }
-        return Clutter.EVENT_PROPAGATE;
-      });
+    get id() { return this.config.appFolder ?? `dash-stack:${this.config.path}`; }
+    getDragActor() { return new Clutter.Clone({source: this.mainIcon}); }
+    getDragActorSource() { return this.mainIcon; }
+    handleDragOver(source) {
+      return source !== this && this._pins.accepts(source) ? DND.DragMotionResult.MOVE_DROP : DND.DragMotionResult.CONTINUE;
+    }
+    acceptDrop(source, _actor, x) {
+      return source !== this && this._pins.drop(source, this._index + (x > this.width / 2 ? 1 : 0));
     }
 
     _getGridIcons(fullPath) {
+      if (this._appFolder) return this._appFolder.apps.slice(0, 4).map(app => app.get_app_info().get_icon() ?? Gio.ThemedIcon.new("application-x-executable"));
       let icons = [];
       try {
         let dir = Gio.File.new_for_path(fullPath);
@@ -747,7 +634,7 @@ const StackButton = GObject.registerClass(
       return icons;
     }
 
-    _createAutoIconWidget(fullPath) {
+    _createAutoIconWidget(fullPath, size = 64) {
       let grid = new St.BoxLayout({
         vertical: true,
         style_class: "stack-auto-icon",
@@ -984,7 +871,7 @@ const StackButton = GObject.registerClass(
 
       // right-click toggle for auto icon
       let autoIconToggle = new PopupMenu.PopupSwitchMenuItem(
-        "Auto-generate Grid Icon",
+        "Show Folder Contents",
         !!this.config.autoIcon,
       );
       autoIconToggle.connect("toggled", (item, state) => {
@@ -1023,7 +910,7 @@ const StackButton = GObject.registerClass(
 
       this._menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-      let deleteItem = new PopupMenu.PopupMenuItem("Delete Stack");
+      let deleteItem = new PopupMenu.PopupMenuItem("Unpin from Dock");
       deleteItem.add_style_class_name("destruct-button");
       deleteItem.connect("activate", () => this._deleteSelf());
       this._menu.addMenuItem(deleteItem);
@@ -1039,6 +926,10 @@ const StackButton = GObject.registerClass(
 
     _deleteSelf() {
       let stacks = JSON.parse(this._settings.get_string("stacks"));
+      if (this.config.appFolder) {
+        this._pins._setPinned(this.config.appFolder, false);
+        return;
+      }
       stacks.splice(this._index, 1);
       this._settings.set_string("stacks", JSON.stringify(stacks));
     }
@@ -1132,7 +1023,7 @@ const StackButton = GObject.registerClass(
       });
     }
 
-    destroy() {
+    _onDestroy() {
       if (this._capturedEventId) global.stage.disconnect(this._capturedEventId);
       if (this.popup) {
         this.popup.remove_all_transitions();
@@ -1150,9 +1041,7 @@ const StackButton = GObject.registerClass(
       }
       if (this._tooltipTimeoutId > 0)
         GLib.source_remove(this._tooltipTimeoutId);
-      if (this.tooltip) this.tooltip.destroy();
-      if (this._menu) this._menu.destroy();
-      super.destroy();
+      if (this._menu) this._pins._destroyMenu(this._menu);
     }
   },
 );
@@ -1171,10 +1060,9 @@ export default class DashStacksExtension extends Extension {
 
     syncConfig();
 
-    this._settingsSignal = this._settings.connect("changed::stacks", () => {
-      this._injectStacks();
-    });
+
     this._buttons = [];
+    this._stacksSignature = null;
     this._boxSignals = [];
     this._configSignals = [];
     this._appFolderPins = new AppFolderPins(this._settings, () => this._injectStacks());
@@ -1189,10 +1077,17 @@ export default class DashStacksExtension extends Extension {
     );
 
     let dash = Main.overview.dash;
+    this._iconSizeSignal = dash.connect("icon-size-changed", () => this._enforceLayout());
+    this._themeContext = St.ThemeContext.get_for_stage(global.stage);
+    this._scaleSignal = this._themeContext.connect("notify::scale-factor", () => {
+      this._injectStacks();
+      this._enforceLayout();
+      this._updateMaxWidth?.();
+    });
     this._originalRedisplay = dash._redisplay;
     this._overviewHidingId = Main.overview.connect("hiding", () => {
       this._buttons.forEach((btn) => {
-        if (btn.popup) btn._closePopup();
+        if (btn._stackButton?.popup) btn._stackButton._closePopup();
       });
     });
 
@@ -1335,7 +1230,7 @@ export default class DashStacksExtension extends Extension {
 
       this._updateMaxWidth = () => {
         let monitor = Main.layoutManager.currentMonitor;
-        let maxWidth = monitor.width - 76 * 2 - 80;
+        let maxWidth = monitor.width - (76 * 2 + 80) * St.ThemeContext.get_for_stage(global.stage).scale_factor;
         this.dashScroll.style = `max-width: ${maxWidth}px;`;
       };
 
@@ -1350,17 +1245,20 @@ export default class DashStacksExtension extends Extension {
   }
 
   _injectStacks() {
-    if (this._injecting || !this._settings || this._appFolderPins?.hasOpenDialog()) return;
+    if (this._injecting || !this._settings) return;
     this._injecting = true;
     try {
+      const stacks = this._getStacksConfig();
+      const signature = JSON.stringify([stacks, CONFIG, St.ThemeContext.get_for_stage(global.stage).scale_factor, stacks.map(stack =>
+        stack.appFolder ? this._appFolderPins.getFolder(stack.appFolder)?.apps.map(app => [app.get_id(), app.get_name()]) : null)]);
+      if (signature === this._stacksSignature && this._buttons.every(button => button.get_parent() === Main.overview.dash._box)) return;
+      this._stacksSignature = signature;
       this._buttons.forEach((b) => {
         b.destroy();
       });
       this._buttons = [];
 
-      const stacks = this._getStacksConfig();
-      const appFolders = this._appFolderPins.createButtons();
-      if (stacks.length === 0 && appFolders.length === 0) return;
+      if (stacks.length === 0) return;
 
       let separator = new St.Widget({
         style_class: "dash-stacks-separator",
@@ -1369,15 +1267,24 @@ export default class DashStacksExtension extends Extension {
       this._buttons.push(separator);
       Main.overview.dash._box.add_child(separator);
 
+      const folderIds = new Set();
       stacks.forEach((stack, index) => {
-        let btn = new StackButton(stack, this._settings, index);
-        this._buttons.push(btn);
-        Main.overview.dash._box.add_child(btn);
+        if (stack.appFolder && folderIds.has(stack.appFolder)) return;
+        if (stack.appFolder) folderIds.add(stack.appFolder);
+        if (stack.appFolder && !this._appFolderPins.getFolder(stack.appFolder)) return;
+        const btn = new StackButton(stack, this._settings, index, this._appFolderPins);
+        const item = new Dash.DashItemContainer();
+        item._stackButton = btn;
+        btn._dashItem = item;
+        item.setChild(btn);
+        btn.x_expand = false;
+        btn.y_expand = false;
+        item.setLabelText(stack.name);
+        Main.overview.dash._hookUpLabel(item);
+        item.show(false);
+        this._buttons.push(item);
+        Main.overview.dash._box.add_child(item);
       });
-      for (const button of appFolders) {
-        this._buttons.push(button);
-        Main.overview.dash._box.add_child(button);
-      }
     } finally {
       this._injecting = false;
     }
@@ -1396,44 +1303,28 @@ export default class DashStacksExtension extends Extension {
         return GLib.SOURCE_REMOVE;
       }
 
+      const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+      const rowHeight = 96 * scale;
+      this.dashWrapper.set_height(rowHeight);
+      this.dashScroll.set_height(rowHeight);
       let totalWidth = 0;
       dash._box.layout_manager.spacing = 0;
-
-      dash._box.get_children().forEach((c) => {
-        // Skip the ghost/null children if any
-        if (!c) return;
-
-        c.x_expand = false;
-        let isSepC = c.style_class && c.style_class.includes("separator");
-        let child = c.get_first_child ? c.get_first_child() : null;
-        let isSepChild =
-          child && child.style_class && child.style_class.includes("separator");
-
+      for (const container of dash._box.get_children()) {
+        container.x_expand = false;
+        const child = container.get_first_child();
         if (child) {
           child.x_expand = false;
-          if (isSepC || isSepChild) {
-            c.set_width(1);
-            child.set_width(1);
-            child.set_margin_left(6);
-            child.set_margin_right(6);
-            totalWidth += 13;
-          } else if (c.has_style_class_name("dash-stack-button")) {
-            c.set_size(76, 76);
-            totalWidth += 76;
-          } else {
-            c.set_width(80);
-            child.set_width(76);
-            totalWidth += 80;
-          }
+          child.set_width(-1);
+          const width = child.get_preferred_width(-1)[1];
+          container.set_width(width);
+          totalWidth += width;
+        } else if (container.has_style_class_name("dash-stacks-separator")) {
+          container.set_width(scale);
+          totalWidth += container.get_preferred_width(-1)[1];
         } else {
-          if (isSepC) {
-            c.set_width(1);
-            totalWidth += 13;
-          } else {
-            c.set_width(0);
-          }
+          totalWidth += container.get_preferred_width(-1)[1];
         }
-      });
+      }
 
       dash._box.set_width(totalWidth);
       this.dashWrapper.set_width(totalWidth);
@@ -1463,6 +1354,10 @@ export default class DashStacksExtension extends Extension {
       if (this[key]) GLib.source_remove(this[key]);
       this[key] = null;
     }
+    if (this._iconSizeSignal) Main.overview.dash.disconnect(this._iconSizeSignal);
+    this._iconSizeSignal = 0;
+    if (this._scaleSignal) this._themeContext.disconnect(this._scaleSignal);
+    this._scaleSignal = 0;
     this._appFolderPins?.destroy();
     this._appFolderPins = null;
     if (this._configSignals && this._settings) {
