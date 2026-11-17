@@ -1,5 +1,6 @@
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
+import Meta from 'gi://Meta';
 import St from 'gi://St';
 import * as DND from 'resource:///org/gnome/shell/ui/dnd.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -81,7 +82,7 @@ export class ScrollableDash {
 
     queueLayout() {
         if (this._layoutId) return;
-        this._layoutId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+        this._layoutId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
             this._layoutId = 0;
             this._layout();
             return GLib.SOURCE_REMOVE;
@@ -232,7 +233,7 @@ export class ScrollableDash {
 
     destroy() {
         this._stopDragScroll();
-        if (this._layoutId) GLib.source_remove(this._layoutId);
+        if (this._layoutId) global.compositor.get_laters().remove(this._layoutId);
         DND.removeDragMonitor(this._dragMonitor);
         this._dragEndIds.forEach(id => Main.overview.disconnect(id));
         this.scroll.hadjustment.disconnect(this._scrollId);
