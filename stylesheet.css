@@ -209,6 +209,11 @@
   -st-hfade-offset: 64px;
 }
 
+/* The square scrolling slots already place the dot within the dock background. */
+#dash .dash-scroll-view .dash-item-container .app-grid-running-dot {
+  offset-y: 0px;
+}
+
 /* Inset shadows preserve the native square tile and hit target dimensions. */
 #dash .dash-item-container .dash-stack-button:drop .overview-icon,
 .stack-item:drop {

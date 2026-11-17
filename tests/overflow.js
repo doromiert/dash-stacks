@@ -48,6 +48,19 @@ export async function runOverflow(extension) {
         }
         const [bx,by] = dash._background.get_transformed_position();
         const [bw,bh] = dash._background.get_transformed_size();
+        const appButton = items.find(item => item.child?._dot)?.child;
+        assert(appButton, 'running-dot fixture missing');
+        const artwork = appButton.icon.icon;
+        const dot = appButton._dot;
+        const [artX, artY] = artwork.get_transformed_position();
+        const [dotX, dotY] = dot.get_transformed_position();
+        const [artW, artH] = artwork.get_transformed_size();
+        const [dotW, dotH] = dot.get_transformed_size();
+        const dotGap = dotY - artY - artH;
+        assert(dotGap > 0 && dotY + dotH <= by + bh,
+            `running dot overlaps app artwork or leaves the dock: gap ${dotGap}px`);
+        assert(Math.abs(dotX + dotW / 2 - artX - artW / 2) <= 1,
+            'running dot is not centered below the artwork');
         const [fx,fy] = icons[0].get_transformed_position();
         const [lastX,lastY] = dash._showAppsIcon.icon.get_transformed_position();
         const vertical = lastY-by;
@@ -59,8 +72,11 @@ export async function runOverflow(extension) {
         const outer={left:bx-dashX,right:dashX+dashW-bx-bw,bottom:dashY+dashH-by-bh};
         if(extension._dock.scroll.hadjustment.upper>extension._dock.scroll.hadjustment.page_size+1)
             assert(Math.abs(outer.left-outer.bottom)<1&&Math.abs(outer.right-outer.bottom)<1, 'outer dock gaps differ '+JSON.stringify(outer));
-        samples.push({scale:context.scale_factor, tiles: sizes.length, size:sizes[0], iconSize:dash.iconSize,padding:{left:fx-bx,right,vertical,outer}});
+        samples.push({scale:context.scale_factor, tiles: sizes.length, size:sizes[0], iconSize:dash.iconSize,dotGap,padding:{left:fx-bx,right,vertical,outer}});
     };
+    const dot = dash._box.get_children().find(item => item.child?._dot)?.child._dot;
+    assert(dot, 'running-dot fixture missing');
+    dot.show();
     const started = GLib.get_monotonic_time();
     settings.set_string('stacks', JSON.stringify(Array.from({length:24}, (_,i) => ({name:`Folder ${i+1}`,path:'/tmp',icon:'folder',autoIcon:i===1}))));
     await delay(180);
@@ -151,6 +167,7 @@ export async function runOverflow(extension) {
     assert(fit.hadjustment.upper <= fit.hadjustment.page_size+1, 'fitting dock still overflows');
     assert(fit.hadjustment.value === 0 && !fit.get_effect('fade').enabled, 'fades/offset remain after removing overflow');
     await snapshot('fit');
+    dot.hide();
     extension.disable();
     assert(dash._box.get_parent() === dash._dashContainer && dash._showAppsIcon.get_parent() === dash._dashContainer, 'native parenting not restored');
     extension.enable();
