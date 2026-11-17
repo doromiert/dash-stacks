@@ -4,7 +4,11 @@
 
 Ever wished GNOME let you pin folders to the dash?
 
-Well guess what, this extension does just that... and makes it so that the dash is scrollable when it overflows (workaround for a bug i caused but honestly i like this more than the default behavior).
+Pin directories and app folders with native dock buttons and stack popups.
+All icon tiles keep the same square size. When the dock runs out of space,
+scroll horizontally instead of shrinking its icons. Edge fades show where more
+items are available; Show Apps stays visible. Use the wheel, touchpad, touch,
+keyboard focus or drag a pin towards an edge to scroll.
 
 
 ## Pin app-grid folders
@@ -24,3 +28,7 @@ containers, theme states and tooltips to match ordinary pinned apps.
 `tests/appFolders.js`, run by ZenPkgs' `dash-stacks-vm`, checks the actual GNOME
 actors, unified popup/contents toggle, migration, DND handlers and cancellation,
 normal-pin theme/tooltip parity and square bounds at normal/doubled scale.
+
+`tests/overflow.js` also checks fixed icon and tile sizes, native-width overflow,
+wheel/touchpad scrolling, focus reveal, edge scrolling, fades, scale and cleanup.
+The integration test runs in an isolated GNOME VM.

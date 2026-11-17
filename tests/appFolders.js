@@ -1,3 +1,4 @@
+import {runOverflow} from "./overflow.js";
 import Gio from 'gi://Gio';
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
@@ -172,5 +173,6 @@ export async function run(extension) {
     assert(scaled[0]===scaled[1],`scaled highlight not square ${scaled}`);
     context.scale_factor=scale;
     await delay(100);
-    return {feedbackMs,size,directorySize,scaled,normalSize:normal.child.icon.get_size(),normalColor,stackColor,normalGap,stackGap,sharedStackModel:true,dragInOutReorder:true,physicalPointerDrag:true,migration:true,membersPreserved:true,lifecycle:true};
+    const overflow = await runOverflow(extension);
+    return {overflow,feedbackMs,size,directorySize,scaled,normalSize:normal.child.icon.get_size(),normalColor,stackColor,normalGap,stackGap,sharedStackModel:true,dragInOutReorder:true,physicalPointerDrag:true,migration:true,membersPreserved:true,lifecycle:true};
 }

@@ -1,4 +1,5 @@
 import { AppFolderPins } from "./appFolders.js";
+import { ScrollableDash } from "./scrollableDash.js";
 import * as IconGrid from "resource:///org/gnome/shell/ui/iconGrid.js";
 import * as Dash from "resource:///org/gnome/shell/ui/dash.js";
 import * as DND from "resource:///org/gnome/shell/ui/dnd.js";
@@ -564,7 +565,7 @@ const StackButton = GObject.registerClass(
 
       this.dlIcon = new St.Icon({
         icon_name: "folder-download-symbolic",
-        icon_size: 32,
+        icon_size: Math.min(32, size),
         x_expand: true,
         y_expand: true,
         x_align: Clutter.ActorAlign.CENTER,
@@ -643,7 +644,8 @@ const StackButton = GObject.registerClass(
       });
 
       let icons = this._getGridIcons(fullPath);
-      let iconSize = 16;
+      const iconSize = Math.max(1, Math.min(26, Math.floor((size - 10) / 2)));
+      const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
 
       for (let r = 0; r < 2; r++) {
         let row = new St.BoxLayout({ style_class: "stack-auto-row" });
@@ -659,8 +661,8 @@ const StackButton = GObject.registerClass(
           } else {
             row.add_child(
               new St.Widget({
-                width: iconSize,
-                height: iconSize,
+                width: iconSize * scale,
+                height: iconSize * scale,
               }),
             );
           }
@@ -758,11 +760,11 @@ const StackButton = GObject.registerClass(
         let resolvedPath = this.config.path.startsWith("~/")
           ? GLib.get_home_dir() + this.config.path.substring(1)
           : this.config.path;
-        mainClone = this._createAutoIconWidget(resolvedPath);
+        mainClone = this._createAutoIconWidget(resolvedPath, this.icon.iconSize);
       } else {
         mainClone = new St.Icon({
           icon_name: this.config.icon,
-          icon_size: 64,
+          icon_size: this.icon.iconSize,
           x_align: Clutter.ActorAlign.CENTER,
           y_align: Clutter.ActorAlign.CENTER,
         });
@@ -1063,7 +1065,6 @@ export default class DashStacksExtension extends Extension {
 
     this._buttons = [];
     this._stacksSignature = null;
-    this._boxSignals = [];
     this._configSignals = [];
     this._appFolderPins = new AppFolderPins(this._settings, () => this._injectStacks());
     ["popup-width", "popup-height", "icon-size", "tooltip-delay"].forEach(
@@ -1077,12 +1078,10 @@ export default class DashStacksExtension extends Extension {
     );
 
     let dash = Main.overview.dash;
-    this._iconSizeSignal = dash.connect("icon-size-changed", () => this._enforceLayout());
     this._themeContext = St.ThemeContext.get_for_stage(global.stage);
     this._scaleSignal = this._themeContext.connect("notify::scale-factor", () => {
       this._injectStacks();
-      this._enforceLayout();
-      this._updateMaxWidth?.();
+      this._dock?.queueLayout();
     });
     this._originalRedisplay = dash._redisplay;
     this._overviewHidingId = Main.overview.connect("hiding", () => {
@@ -1096,149 +1095,11 @@ export default class DashStacksExtension extends Extension {
       this._injectStacks();
     };
 
-    if (dash._box) {
-      this._boxSignals.push(
-        dash._box.connect("child-added", () => this._enforceLayout()),
-      );
-      this._boxSignals.push(
-        dash._box.connect("child-removed", () => this._enforceLayout()),
-      );
-    }
-
     this._injectStacks();
 
     this._layoutIdleId = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
       this._layoutIdleId = null;
-      let dash = Main.overview.dash;
-      let dashBox = dash._box;
-      let dashParent = dashBox.get_parent();
-
-      if (this.dashScroll) return GLib.SOURCE_REMOVE;
-
-      this.masterLayout = new St.BoxLayout({
-        style_class: "dash-scroll-master",
-        vertical: false,
-        x_expand: true,
-        y_expand: false,
-        reactive: true,
-      });
-
-      this.dashScroll = new St.ScrollView({
-        style_class: "dash-scroll-view",
-        hscrollbar_policy: St.PolicyType.EXTERNAL,
-        vscrollbar_policy: St.PolicyType.NEVER,
-        overlay_scrollbars: true,
-        enable_mouse_scrolling: true,
-        x_expand: true,
-        y_expand: false,
-        height: 96,
-      });
-
-      this.dashWrapper = new St.BoxLayout({
-        style_class: "dash-scroll-wrapper",
-        vertical: false,
-        x_expand: false,
-        y_expand: true,
-        height: 96,
-      });
-
-      this.dashScroll.reactive = true;
-      this.dashWrapper.reactive = true;
-      this.dashScroll.connect("captured-event", (actor, event) => {
-        let type = event.type();
-        let adj = this.dashScroll.hadjustment;
-
-        if (type === Clutter.EventType.SCROLL) {
-          let source = event.get_scroll_source();
-          if (source !== Clutter.ScrollSource.WHEEL)
-            return Clutter.EVENT_PROPAGATE;
-
-          let direction = event.get_scroll_direction();
-          let scrollAmount = 76;
-          if (
-            direction === Clutter.ScrollDirection.UP ||
-            direction === Clutter.ScrollDirection.LEFT
-          )
-            adj.value -= scrollAmount;
-          else if (
-            direction === Clutter.ScrollDirection.DOWN ||
-            direction === Clutter.ScrollDirection.RIGHT
-          )
-            adj.value += scrollAmount;
-
-          return Clutter.EVENT_STOP;
-        }
-
-        // --- TOUCH BEGIN (YOU DELETED THIS) ---
-        if (type === Clutter.EventType.TOUCH_BEGIN) {
-          let [x, y] = event.get_coords();
-          dashTouchStartX = x;
-          dashLastTouchX = x;
-          dashIsDragging = false;
-          // let it propagate so buttons know a touch started
-          return Clutter.EVENT_PROPAGATE;
-        }
-
-        if (type === Clutter.EventType.TOUCH_UPDATE) {
-          if (dashTouchStartX === null) return Clutter.EVENT_PROPAGATE;
-          let [x, y] = event.get_coords();
-          let dx = dashLastTouchX - x;
-
-          if (!dashIsDragging && Math.abs(dashTouchStartX - x) > 10) {
-            dashIsDragging = true;
-            // tell the system this scrollview OWNS the pointer now
-            // this sends the TOUCH_CANCEL to your buttons
-            Clutter.grab_pointer(this.dashScroll);
-          }
-
-          if (dashIsDragging) {
-            adj.value += dx;
-            dashLastTouchX = x;
-            return Clutter.EVENT_STOP;
-          }
-        }
-
-        if (
-          type === Clutter.EventType.TOUCH_END ||
-          type === Clutter.EventType.TOUCH_CANCEL
-        ) {
-          dashTouchStartX = null;
-          if (dashIsDragging) {
-            dashIsDragging = false;
-            Clutter.ungrab_pointer();
-            return Clutter.EVENT_STOP;
-          }
-        }
-
-        return Clutter.EVENT_PROPAGATE;
-      });
-
-      // Keep GNOME's ShowAppsIcon container intact (the toggle button is its child).
-      const showApps = dash._showAppsIcon;
-      this._showAppsParent = showApps.get_parent();
-      this._showAppsIndex = this._showAppsParent.get_children().indexOf(showApps);
-      this._showAppsParent.remove_child(showApps);
-
-      dashParent.remove_child(dashBox);
-      this.dashWrapper.add_child(dashBox);
-      this.dashScroll.set_child(this.dashWrapper);
-
-      this.masterLayout.add_child(this.dashScroll);
-      this.masterLayout.add_child(showApps);
-
-      dashParent.insert_child_at_index(this.masterLayout, 0);
-
-      this._updateMaxWidth = () => {
-        let monitor = Main.layoutManager.currentMonitor;
-        let maxWidth = monitor.width - (76 * 2 + 80) * St.ThemeContext.get_for_stage(global.stage).scale_factor;
-        this.dashScroll.style = `max-width: ${maxWidth}px;`;
-      };
-
-      this._updateMaxWidth();
-      this._monitorsChangedId = Main.layoutManager.connect(
-        "monitors-changed",
-        () => this._updateMaxWidth(),
-      );
+      this._dock = new ScrollableDash(Main.overview.dash);
 
       return GLib.SOURCE_REMOVE;
     });
@@ -1253,9 +1114,7 @@ export default class DashStacksExtension extends Extension {
         stack.appFolder ? this._appFolderPins.getFolder(stack.appFolder)?.apps.map(app => [app.get_id(), app.get_name()]) : null)]);
       if (signature === this._stacksSignature && this._buttons.every(button => button.get_parent() === Main.overview.dash._box)) return;
       this._stacksSignature = signature;
-      this._buttons.forEach((b) => {
-        b.destroy();
-      });
+      this._clearButtons();
       this._buttons = [];
 
       if (stacks.length === 0) return;
@@ -1290,48 +1149,21 @@ export default class DashStacksExtension extends Extension {
     }
   }
 
-  _enforceLayout() {
-    if (this._enforceTimeoutId) {
-      GLib.source_remove(this._enforceTimeoutId);
+  _clearButtons() {
+    const dash = Main.overview.dash;
+    for (const item of this._buttons) {
+      if (item.child) {
+        item.child.track_hover = false;
+        item.child.set_hover(false);
+      }
+      item.label?.remove_all_transitions();
+      item.destroy();
     }
-
-    this._enforceTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
-      let dash = Main.overview.dash;
-      // We check dash._box directly now
-      if (!this.dashWrapper || !dash._box) {
-        this._enforceTimeoutId = null;
-        return GLib.SOURCE_REMOVE;
-      }
-
-      const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-      const rowHeight = 96 * scale;
-      this.dashWrapper.set_height(rowHeight);
-      this.dashScroll.set_height(rowHeight);
-      let totalWidth = 0;
-      dash._box.layout_manager.spacing = 0;
-      for (const container of dash._box.get_children()) {
-        container.x_expand = false;
-        const child = container.get_first_child();
-        if (child) {
-          child.x_expand = false;
-          child.set_width(-1);
-          const width = child.get_preferred_width(-1)[1];
-          container.set_width(width);
-          totalWidth += width;
-        } else if (container.has_style_class_name("dash-stacks-separator")) {
-          container.set_width(scale);
-          totalWidth += container.get_preferred_width(-1)[1];
-        } else {
-          totalWidth += container.get_preferred_width(-1)[1];
-        }
-      }
-
-      dash._box.set_width(totalWidth);
-      this.dashWrapper.set_width(totalWidth);
-
-      this._enforceTimeoutId = null;
-      return GLib.SOURCE_REMOVE;
-    });
+    // Destroying a hovered item can queue one last native label callback.
+    if (dash._showLabelTimeoutId) {
+      GLib.source_remove(dash._showLabelTimeoutId);
+      dash._showLabelTimeoutId = 0;
+    }
   }
 
   _getStacksConfig() {
@@ -1350,12 +1182,10 @@ export default class DashStacksExtension extends Extension {
   }
 
   disable() {
-    for (const key of ["_layoutIdleId", "_enforceTimeoutId"]) {
+    for (const key of ["_layoutIdleId"]) {
       if (this[key]) GLib.source_remove(this[key]);
       this[key] = null;
     }
-    if (this._iconSizeSignal) Main.overview.dash.disconnect(this._iconSizeSignal);
-    this._iconSizeSignal = 0;
     if (this._scaleSignal) this._themeContext.disconnect(this._scaleSignal);
     this._scaleSignal = 0;
     this._appFolderPins?.destroy();
@@ -1363,11 +1193,6 @@ export default class DashStacksExtension extends Extension {
     if (this._configSignals && this._settings) {
       this._configSignals.forEach((sig) => this._settings.disconnect(sig));
       this._configSignals = [];
-    }
-
-    if (this._monitorsChangedId) {
-      Main.layoutManager.disconnect(this._monitorsChangedId);
-      this._monitorsChangedId = null;
     }
 
     if (this._settingsSignal && this._settings) this._settings.disconnect(this._settingsSignal);
@@ -1380,39 +1205,10 @@ export default class DashStacksExtension extends Extension {
     if (this._overviewHidingId)
       Main.overview.disconnect(this._overviewHidingId);
 
-    this._buttons.forEach((btn) => btn.destroy());
+    this._clearButtons();
     this._buttons = [];
 
-    if (this._boxSignals) {
-      let dash = Main.overview.dash;
-      if (dash && dash._box)
-        this._boxSignals.forEach((id) => dash._box.disconnect(id));
-      this._boxSignals = [];
-    }
-
-    if (this.dashScroll) {
-      let dash = Main.overview.dash;
-      let dashParent = this.masterLayout.get_parent();
-
-      if (dashParent) {
-        this.dashWrapper.remove_child(dash._box);
-
-        this.masterLayout.remove_child(dash._showAppsIcon);
-        this._showAppsParent.insert_child_at_index(dash._showAppsIcon, this._showAppsIndex);
-
-        dashParent.insert_child_at_index(dash._box, 0);
-        dashParent.remove_child(this.masterLayout);
-      }
-
-      dash._box.set_width(-1);
-
-      this.dashWrapper.destroy();
-      this.dashScroll.destroy();
-      this.masterLayout.destroy();
-
-      this.dashScroll = null;
-      this.dashWrapper = null;
-      this.masterLayout = null;
-    }
+    this._dock?.destroy();
+    this._dock = null;
   }
 }
