@@ -83,8 +83,39 @@ export class AppFolderPins {
         this._hidingId = Main.overview.connect('hiding', () => {
             for (const {menu} of this._menus.values()) menu.close();
         });
+        this._dropMonitor={dragMotion:event=>{
+            if(this._dropTarget&&(!event.targetActor||!this._dropTarget.contains(event.targetActor)))this.highlightDrop(null);
+            return DND.DragMotionResult.CONTINUE;
+        },dragDrop:()=>{this.highlightDrop(null);return DND.DragDropResult.CONTINUE;}};
+        DND.addDragMonitor(this._dropMonitor);
+        this._dropEndIds=['item-drag-end','item-drag-cancelled','window-drag-end','window-drag-cancelled','hiding']
+            .map(signal=>Main.overview.connect(signal,()=>this.highlightDrop(null)));
         this._syncWatches();
         this._view._redisplay();
+    }
+
+    clearFavoritePlaceholder() {
+        const dash=Main.overview.dash;
+        dash._clearDragPlaceholder();
+        // Finish native placeholder removal now, including an outgoing one.
+        for(const item of dash._box.get_children()){
+            if(!item.child?.has_style_class_name('placeholder'))continue;
+            item.remove_all_transitions();item.destroy();
+        }
+    }
+
+    highlightDrop(target) {
+        if(target)this.clearFavoritePlaceholder();
+        if(target===this._dropTarget)return;
+        if(this._dropTarget){
+            this._dropTarget.disconnect(this._dropTargetDestroyId);
+            this._dropTarget.remove_style_pseudo_class('drop');
+        }
+        this._dropTarget=target;
+        if(target){
+            target.add_style_pseudo_class('drop');
+            this._dropTargetDestroyId=target.connect('destroy',()=>{this._dropTarget=null;this._dropTargetDestroyId=0;});
+        }
     }
 
     _stacks() {
@@ -301,6 +332,9 @@ export class AppFolderPins {
     }
 
     destroy() {
+        this.highlightDrop(null);
+        DND.removeDragMonitor(this._dropMonitor);
+        this._dropEndIds.forEach(id=>Main.overview.disconnect(id));
         this._disposed=true;
         for(const job of this._jobs)job.cancel();
         this.contents.destroy();

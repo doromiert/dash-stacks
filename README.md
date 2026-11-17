@@ -37,7 +37,8 @@ The integration test runs in an isolated GNOME VM.
 
 ## Add apps and nested stacks
 
-Drop an app onto the middle of a stack to add it. Directory stacks receive a
+Drag over the middle of a stack to see its outlined drop target, then release
+to add the item. Directory stacks receive a
 copy of its launcher; app folders keep native GNOME membership. A successful
 addition removes an existing dock favorite. Drop near a stack's edge to reorder.
 

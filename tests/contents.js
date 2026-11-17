@@ -3,6 +3,7 @@ import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import Shell from 'gi://Shell';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as DND from 'resource:///org/gnome/shell/ui/dnd.js';
 const delay=ms=>new Promise(resolve=>GLib.timeout_add(GLib.PRIORITY_DEFAULT,ms,()=>{resolve();return GLib.SOURCE_REMOVE;}));
 const assert=(condition,message)=>{if(!condition)throw new Error(message);};
 async function waitFor(condition,message,timeout=3000){const end=GLib.get_monotonic_time()+timeout*1000;while(!condition()){if(GLib.get_monotonic_time()>end)throw new Error(message);await delay(10);}}
@@ -35,7 +36,17 @@ export async function runContents(extension){
   pointer.notify_button(GLib.get_monotonic_time(),Clutter.BUTTON_PRIMARY,Clutter.ButtonState.PRESSED);await delay(60);
   for(let step=1;step<=24;step++){const end=center(target);pointer.notify_absolute_motion(GLib.get_monotonic_time(),start[0]+(end[0]-start[0])*step/24,start[1]+(end[1]-start[1])*step/24);await delay(16);}
   for(let step=0;step<5;step++){pointer.notify_absolute_motion(GLib.get_monotonic_time(),...center(target));await delay(30);}
+  assert(target.has_style_pseudo_class('drop'),'physical drag target has no outlined highlight');
+  const dash=Main.overview.dash;
+  assert(!dash._dragPlaceholder&&!dash._box.get_children().some(item=>item.child?.has_style_class_name('placeholder')),'favorites placeholder left a gap during contents hover');
+  assert(dash._animatingPlaceholdersCount===0,'placeholder animation count leaked');
+  const visual=target.icon??target;
+  visual.ensure_style();const shadow=visual.get_theme_node().get_box_shadow();
+  assert(shadow?.inset&&shadow.spread>0,'drop target outline is not painted');
+  const stream=Gio.File.new_for_path('/tmp/dock-drop.png').replace(null,false,Gio.FileCreateFlags.NONE,null);
+  try{await new Shell.Screenshot().screenshot(false,stream);}finally{stream.close(null);}
   pointer.notify_button(GLib.get_monotonic_time(),Clutter.BUTTON_PRIMARY,Clutter.ButtonState.RELEASED);await delay(250);
+  assert(!pins._dropTarget,'drop highlight survived release');
  };
  let feedbackMs;
  try{
@@ -45,6 +56,21 @@ export async function runContents(extension){
   settings.set_string('stacks',JSON.stringify([{name:'Alpha',path:alpha,icon:'folder',autoIcon:true},{name:'Beta',path:beta,icon:'folder',autoIcon:true}]));
   await waitFor(()=>button(alpha)&&button(beta)&&topHas(textId)&&folderIcon(),'contents fixture did not settle');
   const appIcon=view.getAllItems().find(item=>item.id===textId);
+  const target=button(alpha),size=target.icon.get_size();
+  const dash=Main.overview.dash;
+  dash.handleDragOver(appIcon,null,0,0,0);assert(dash._dragPlaceholder,'native favorites fixture missing');
+  target.handleDragOver({app:text},null,target.width/2);
+  assert(!dash._dragPlaceholder&&!dash._box.get_children().some(item=>item.child?.has_style_class_name('placeholder')),'native placeholder not cleared immediately');
+  assert(target.has_style_pseudo_class('drop'),'valid center did not highlight');
+  target.icon.ensure_style();assert(JSON.stringify(target.icon.get_size())===JSON.stringify(size),'outline changed square geometry');
+  assert(target.handleDragOver({app:text},null,0)===DND.DragMotionResult.NO_DROP,'app edge delegated to native favorite insertion');assert(!pins._dropTarget&&!dash._dragPlaceholder,'app edge retained contents highlight or favorites gap');
+  target.handleDragOver({app:text},null,target.width/2);
+  pins._dropMonitor.dragMotion({targetActor:view});assert(!pins._dropTarget,'drag leave retained highlight');
+  target.handleDragOver({app:text},null,target.width/2);
+  Main.overview.cancelledItemDrag(target);assert(!pins._dropTarget,'cancel retained highlight');
+  target.handleDragOver(target,null,target.width/2);assert(!pins._dropTarget,'rejected self target highlighted');
+  assert(dash.handleDragOver(appIcon,null,0,0,0)!==DND.DragMotionResult.NO_DROP&&dash._dragPlaceholder,'normal favorites pinning no longer accepts apps');
+  target.handleDragOver({app:text},null,target.width/2);pins.highlightDrop(null);
   view.goToPage(view._grid.getItemPage(appIcon),false);await delay(200);
   await drag(appIcon,button(alpha));
   await waitFor(()=>pins.contents.hidden.has(textId)&&!topHas(textId),'physical app center drop failed');
@@ -99,6 +125,8 @@ export async function runContents(extension){
   await waitFor(()=>configs()[0].children.some(child=>child.appFolder===groupId)&&!folderIcon(),'virtual folder nesting failed');
   button(alpha).emit('clicked',1);await waitFor(()=>button(alpha).popup&&nestedItems(button(alpha).popup).some(i=>i._stackConfig.appFolder===groupId),'nested virtual folder missing');
   const virtualPopup=button(alpha).popup;const virtualItem=nestedItems(virtualPopup).find(i=>i._stackConfig.appFolder===groupId);
+  virtualItem.handleDragOver({app:text});assert(virtualItem.has_style_pseudo_class('drop'),'nested stack target did not highlight');
+  pins.highlightDrop(null);
   virtualItem.emit('clicked',1);
   await waitFor(()=>virtualPopup.history.at(-1).appFolder===groupId&&virtualPopup.grid.get_n_children()>0,'virtual navigation failed');
   assert(!virtualPopup.nautilusBtn.visible,'filesystem action visible for virtual folder');
@@ -109,7 +137,9 @@ export async function runContents(extension){
   let rejected=false;try{await pins.add({_folderPath:alpha},button(alpha).config);}catch{rejected=true;}
   assert(rejected,'filesystem self nesting accepted');
   assert(nativeSource.load_contents(null)[1].every((value,index)=>value===originalBytes[index]),'installed desktop file modified');
-  return {feedbackMs,drop:true,physicalAppDrop:true,physicalStackDrop:true,externalFiles:true,rename:true,duplicates:true,nativeGrouping:true,nestedShortcut:true,collision:true,originalPreserved:true,sharedPopup:true,virtualNested:true,cycleRejected:true};
+  pins.highlightDrop(button(alpha));extension.disable();assert(!pins._dropTarget,'disable retained drop target');
+  extension.enable();await delay(200);
+  return {feedbackMs,drop:true,physicalAppDrop:true,physicalStackDrop:true,dropOutline:true,outlineCleanup:true,noFavoriteGap:true,externalFiles:true,rename:true,duplicates:true,nativeGrouping:true,nestedShortcut:true,collision:true,originalPreserved:true,sharedPopup:true,virtualNested:true,cycleRejected:true};
  }finally{
   for(const b of buttons())if(b.popup)b._closePopup();
   settings.set_string('stacks',savedStacks);global.settings.set_strv('favorite-apps',savedFavorites);folders.set_strv('folder-children',savedFolders);

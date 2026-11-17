@@ -218,9 +218,11 @@ const StackItem = GObject.registerClass(
       draggable.connect("drag-end", () => Main.overview.endItemDrag(this));
     }
     handleDragOver(source) {
-      return this._stackConfig&&source!==this&&this._pins.canAdd(source,this._stackConfig)?DND.DragMotionResult.MOVE_DROP:DND.DragMotionResult.CONTINUE;
+      const accepts=this._stackConfig&&source!==this&&!this._pendingDrop&&this._pins.canAdd(source,this._stackConfig);
+      this._pins.highlightDrop(accepts?this:null);
+      return accepts?DND.DragMotionResult.MOVE_DROP:DND.DragMotionResult.CONTINUE;
     }
-    acceptDrop(source) {return !!this._stackConfig&&receiveContents(this,source,this._stackConfig,this._pins);}
+    acceptDrop(source) {this._pins.highlightDrop(null);return !!this._stackConfig&&receiveContents(this,source,this._stackConfig,this._pins);}
   },
 );
 
@@ -612,12 +614,16 @@ const StackButton = GObject.registerClass(
     getDragActor() { return new Clutter.Clone({source: this.mainIcon}); }
     getDragActorSource() { return this.mainIcon; }
     handleDragOver(source,_actor,x=this.width/2) {
-      if(source===this||this._pendingDrop)return DND.DragMotionResult.CONTINUE;
+      this._pins.clearFavoritePlaceholder();
       const center=x>=this.width/4&&x<=this.width*3/4;
-      if(center&&this._pins.canAdd(source,this.config))return DND.DragMotionResult.MOVE_DROP;
-      return this._pins.accepts(source)?DND.DragMotionResult.MOVE_DROP:DND.DragMotionResult.CONTINUE;
+      const accepts=source!==this&&!this._pendingDrop&&center&&this._pins.canAdd(source,this.config);
+      this._pins.highlightDrop(accepts?this:null);
+      if(source===this||this._pendingDrop)return DND.DragMotionResult.CONTINUE;
+      if(accepts)return DND.DragMotionResult.MOVE_DROP;
+      return this._pins.accepts(source)?DND.DragMotionResult.MOVE_DROP:DND.DragMotionResult.NO_DROP;
     }
     acceptDrop(source,_actor,x=this.width/2) {
+      this._pins.highlightDrop(null);
       if(source===this)return false;
       if(x>=this.width/4&&x<=this.width*3/4&&this._pins.canAdd(source,this.config))return receiveContents(this,source,this.config,this._pins);
       return this._pins.drop(source,this._index+(x>this.width/2?1:0));

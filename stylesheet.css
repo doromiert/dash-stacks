@@ -208,3 +208,10 @@
   background-color: transparent;
   -st-hfade-offset: 64px;
 }
+
+/* Inset shadows preserve the native square tile and hit target dimensions. */
+#dash .dash-item-container .dash-stack-button:drop .overview-icon,
+.stack-item:drop {
+  background-color: st-transparentize(-st-accent-color, 0.8);
+  box-shadow: inset 0 0 0 2px st-transparentize(-st-accent-color, 0.2);
+}
