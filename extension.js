@@ -1,3 +1,5 @@
+import {stackPath,stackKey} from './stackContents.js';
+import Shell from 'gi://Shell';
 import { AppFolderPins } from "./appFolders.js";
 import { ScrollableDash } from "./scrollableDash.js";
 import * as IconGrid from "resource:///org/gnome/shell/ui/iconGrid.js";
@@ -19,6 +21,19 @@ let CONFIG = {
   iconSize: 48,
   tooltipDelay: 500, // ms
 };
+
+function receiveContents(target, source, config, pins) {
+  if(target._pendingDrop||!pins.canAdd(source,config))return false;
+  target._pendingDrop=true;target.add_style_pseudo_class('active');
+  const label=target._dashItem;
+  if(label){label.setLabelText(`Adding to ${config.name}…`);label.showLabel();}
+  pins.add(source,config).catch(error=>Main.notifyError('Could not add to stack',error.message)).finally(()=>{
+    if(target._destroyed)return;
+    target._pendingDrop=false;target.remove_style_pseudo_class('active');
+    if(label){label.setLabelText(config.name);label.hideLabel();}
+  });
+  return true;
+}
 
 const CalloutArrow = GObject.registerClass(
   class CalloutArrow extends St.DrawingArea {
@@ -42,7 +57,7 @@ const CalloutArrow = GObject.registerClass(
 
 const StackItem = GObject.registerClass(
   class StackItem extends St.Button {
-    _init(fileInfo, dirPath, popupRef, shellApp = null) {
+    _init(fileInfo, dirPath, popupRef, shellApp = null, nestedStack = null) {
       super._init({
         style_class: "stack-item",
         reactive: true,
@@ -55,9 +70,14 @@ const StackItem = GObject.registerClass(
 
       const fileName = fileInfo.get_name();
       this.path = dirPath + "/" + fileName;
+      this._pins=popupRef.sourceActor._pins;this._stackConfig=nestedStack;
+      if(nestedStack){this.config=nestedStack;this._dashStack=true;}
+      this.connect('destroy',()=>{this._destroyed=true;});
       let isDir = fileInfo.get_file_type() === Gio.FileType.DIRECTORY;
       this._folderPath = isDir ? this.path : null;
-      let isApp = fileName.endsWith(".desktop");
+      let isApp = !nestedStack && fileName.endsWith(".desktop");
+      shellApp??=isApp?Shell.AppSystem.get_default().lookup_app(fileName):null;
+      this._stackApp=shellApp;
 
       let isDownloading = false;
 
@@ -98,6 +118,7 @@ const StackItem = GObject.registerClass(
 
       let displayIcon = fileInfo.get_icon();
 
+      if(nestedStack){displayName=nestedStack.name;displayIcon=Gio.ThemedIcon.new(nestedStack.icon??'folder');}
       // grab the real app name and icon if it's a desktop file
       if (isApp) {
         let appInfo = shellApp?.get_app_info() ?? Gio.DesktopAppInfo.new_from_filename(this.path);
@@ -167,7 +188,8 @@ const StackItem = GObject.registerClass(
       this.set_child(box);
 
       this.connect("clicked", () => {
-        if (isDir) {
+        if(nestedStack){popupRef._navigateStack(nestedStack);}
+        else if (isDir) {
           popupRef._navigate(this.path, fileName);
         } else if (isApp) {
           if (shellApp) shellApp.activate();
@@ -178,7 +200,7 @@ const StackItem = GObject.registerClass(
           Main.overview.hide();
           popupRef.sourceActor._closePopup();
         } else {
-          Gio.AppInfo.launch_default_for_uri("file://" + this.path, null);
+          Gio.AppInfo.launch_default_for_uri(Gio.File.new_for_path(this.path).get_uri(), null);
           Main.overview.hide();
           popupRef.sourceActor._closePopup();
         }
@@ -194,8 +216,11 @@ const StackItem = GObject.registerClass(
         Main.overview.beginItemDrag(this);
       });
       draggable.connect("drag-end", () => Main.overview.endItemDrag(this));
-
     }
+    handleDragOver(source) {
+      return this._stackConfig&&source!==this&&this._pins.canAdd(source,this._stackConfig)?DND.DragMotionResult.MOVE_DROP:DND.DragMotionResult.CONTINUE;
+    }
+    acceptDrop(source) {return !!this._stackConfig&&receiveContents(this,source,this._stackConfig,this._pins);}
   },
 );
 
@@ -211,10 +236,10 @@ const StackPopup = GObject.registerClass(
 
       this.sourceActor = sourceActor;
       this.connect("destroy", () => {
-        if (this._loadIdleId) GLib.source_remove(this._loadIdleId);
-        this._loadIdleId = 0;
+        this._cancelLoad();
       });
-      this.history = [{ path: stackConfig.path, name: stackConfig.name }];
+      this.history = [{ ...stackConfig, path: stackPath(stackConfig) }];
+      this._generation=0;
       this.set_pivot_point(0.5, 1.0);
 
       let contentBox = new St.BoxLayout({
@@ -264,7 +289,7 @@ const StackPopup = GObject.registerClass(
 
       this.nautilusBtn.connect("clicked", () => {
         let current = this.history[this.history.length - 1];
-        Gio.AppInfo.launch_default_for_uri("file://" + current.path, null);
+        Gio.AppInfo.launch_default_for_uri(Gio.File.new_for_path(current.path).get_uri(), null);
 
         this.sourceActor._closePopup();
         Main.overview.hide();
@@ -382,10 +407,17 @@ const StackPopup = GObject.registerClass(
       this._updateView();
     }
 
-    _navigate(path, name) {
-      this.history.push({ path, name });
-      this._updateView();
+    _navigate(path, name) {this._navigateStack({path,name});}
+    _navigateStack(stack) {this.history.push({...stack,path:stackPath(stack)});this._updateView();}
+    _cancelLoad() {
+      this._generation=(this._generation??0)+1;this._loadCancel?.cancel();
+      if(this._loadIdleId)GLib.source_remove(this._loadIdleId);
+      this._loadIdleId=0;this._yieldResolve?.();this._yieldResolve=null;
     }
+    _yieldUI() {return new Promise(resolve=>{
+      this._yieldResolve=resolve;
+      this._loadIdleId=GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE,()=>{this._loadIdleId=0;this._yieldResolve=null;resolve();return GLib.SOURCE_REMOVE;});
+    });}
 
     _goBack() {
       if (this.history.length > 1) {
@@ -395,58 +427,55 @@ const StackPopup = GObject.registerClass(
     }
 
     _updateView() {
-      let current = this.history[this.history.length - 1];
-      this.titleLabel.set_text(current.name);
-
-      let isRoot = this.history.length === 1;
-      this.backBtn.opacity = isRoot ? 0 : 255;
-      this.backBtn.reactive = !isRoot;
-
-      this.grid.destroy_all_children();
-
-      if (this.sourceActor._appFolder) {
-        const items = this.sourceActor._appFolder.apps.map(app => {
-          const appInfo = app.get_app_info();
-          const filename = appInfo.get_filename();
-          const info = new Gio.FileInfo();
-          info.set_name(GLib.path_get_basename(filename));
-          info.set_file_type(Gio.FileType.REGULAR);
-          info.set_icon(appInfo.get_icon() ?? Gio.ThemedIcon.new("application-x-executable"));
-          return new StackItem(info, GLib.path_get_dirname(filename), this, app);
-        });
-        this._renderItems(items);
+      this._cancelLoad();const current=this.history.at(-1);this.titleLabel.text=current.name;
+      const isRoot=this.history.length===1;this.backBtn.opacity=isRoot?0:255;this.backBtn.reactive=!isRoot;
+      this.nautilusBtn.visible=!!current.path;this.grid.destroy_all_children();this._renderCount=0;
+      this._loadCancel=new Gio.Cancellable();
+      this._loadView(current,this._generation,this._loadCancel).catch(error=>{
+        if(!error.matches?.(Gio.IOErrorEnum,Gio.IOErrorEnum.CANCELLED))console.error(`[dash-stacks] ${error}`);
+      });
+    }
+    async _loadView(current,generation,cancel) {
+      const valid=()=>this._generation===generation&&!cancel.is_cancelled();
+      const invoke=(object,method,finish,...args)=>new Promise((resolve,reject)=>object[method](...args,(f,r)=>{try{resolve(f[finish](r));}catch(e){reject(e);}}));
+      const virtual=(current.children??[]).filter(child=>current.appFolder||child.appFolder);
+      this._renderItems(virtual.map(child=>{
+        const info=new Gio.FileInfo();info.set_name(child.name);info.set_file_type(Gio.FileType.DIRECTORY);info.set_icon(Gio.ThemedIcon.new(child.icon??'folder'));
+        return new StackItem(info,current.path??GLib.get_home_dir(),this,null,child);
+      }));
+      if(current.appFolder){
+        const apps=this.sourceActor._pins.getFolder(current.appFolder)?.apps??[];
+        for(let i=0;i<apps.length&&valid();i+=24){
+          this._renderItems(apps.slice(i,i+24).map(app=>{
+            const appInfo=app.get_app_info(),filename=appInfo.get_filename(),info=new Gio.FileInfo();
+            info.set_name(GLib.path_get_basename(filename));info.set_file_type(Gio.FileType.REGULAR);info.set_icon(appInfo.get_icon()??Gio.ThemedIcon.new('application-x-executable'));
+            return new StackItem(info,GLib.path_get_dirname(filename),this,app);
+          }));
+          if(i+24<apps.length)await this._yieldUI();
+        }
         return;
       }
-      if (this._loadIdleId) GLib.source_remove(this._loadIdleId);
-      this._loadIdleId = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-        this._loadIdleId = 0;
-        let dir = Gio.File.new_for_path(current.path);
-        try {
-          let enumerator = dir.enumerate_children(
-            "standard::name,standard::icon,standard::type",
-            Gio.FileQueryInfoFlags.NONE,
-            null,
-          );
-          let info;
-          let items = [];
-
-          while ((info = enumerator.next_file(null)) != null) {
-            if (info.get_name().startsWith(".")) continue;
-            items.push(new StackItem(info, current.path, this));
-          }
-
-          this._renderItems(items);
-          enumerator.close(null);
-        } catch (e) {
-          console.error(`[dash-stacks] error: ${e}`);
+      this.titleLabel.text=`${current.name} · Loading…`;let enumerator;
+      try {
+        enumerator=await invoke(Gio.File.new_for_path(current.path),'enumerate_children_async','enumerate_children_finish','standard::name,standard::icon,standard::type',Gio.FileQueryInfoFlags.NONE,GLib.PRIORITY_DEFAULT,cancel);
+        while(valid()){
+          const batch=await invoke(enumerator,'next_files_async','next_files_finish',32,GLib.PRIORITY_DEFAULT,cancel);
+          if(!valid()||!batch.length)break;
+          this._renderItems(batch.filter(info=>!info.get_name().startsWith('.')).map(info=>{
+            const path=current.path+'/'+info.get_name(),nested=(current.children??[]).find(child=>stackPath(child)===path);
+            return new StackItem(info,current.path,this,null,nested);
+          }));
+          await this._yieldUI();
         }
-        return GLib.SOURCE_REMOVE;
-      });
+      }finally{
+        if(valid())this.titleLabel.text=current.name;
+        if(enumerator)try{await invoke(enumerator,'close_async','close_finish',GLib.PRIORITY_DEFAULT,null);}catch{}
+      }
     }
     _renderItems(items) {
       items.forEach((item, index) => {
-        if (index % 4 === 0) this.grid.add_child(new St.BoxLayout({style: "spacing: 12px;"}));
-        this.grid.get_last_child().add_child(item);
+        if (this._renderCount % 4 === 0) this.grid.add_child(new St.BoxLayout({style: "spacing: 12px;"}));
+        this.grid.get_last_child().add_child(item);this._renderCount++;
       });
     }
 
@@ -467,7 +496,7 @@ const StackButton = GObject.registerClass(
 
       this.config = stackConfig;
       this._pins = pins;
-      this._appFolder = stackConfig.appFolder ? pins.getFolder(stackConfig.appFolder) : null;
+      this._appFolder = stackConfig.appFolder ? (pins.getFolder(stackConfig.appFolder)??{name:stackConfig.name,apps:[]}) : null;
       this._dashStack = true;
       this._delegate = this;
       this.connect("destroy", () => this._onDestroy());
@@ -582,15 +611,25 @@ const StackButton = GObject.registerClass(
     get id() { return this.config.appFolder ?? `dash-stack:${this.config.path}`; }
     getDragActor() { return new Clutter.Clone({source: this.mainIcon}); }
     getDragActorSource() { return this.mainIcon; }
-    handleDragOver(source) {
-      return source !== this && this._pins.accepts(source) ? DND.DragMotionResult.MOVE_DROP : DND.DragMotionResult.CONTINUE;
+    handleDragOver(source,_actor,x=this.width/2) {
+      if(source===this||this._pendingDrop)return DND.DragMotionResult.CONTINUE;
+      const center=x>=this.width/4&&x<=this.width*3/4;
+      if(center&&this._pins.canAdd(source,this.config))return DND.DragMotionResult.MOVE_DROP;
+      return this._pins.accepts(source)?DND.DragMotionResult.MOVE_DROP:DND.DragMotionResult.CONTINUE;
     }
-    acceptDrop(source, _actor, x) {
-      return source !== this && this._pins.drop(source, this._index + (x > this.width / 2 ? 1 : 0));
+    acceptDrop(source,_actor,x=this.width/2) {
+      if(source===this)return false;
+      if(x>=this.width/4&&x<=this.width*3/4&&this._pins.canAdd(source,this.config))return receiveContents(this,source,this.config,this._pins);
+      return this._pins.drop(source,this._index+(x>this.width/2?1:0));
+    }
+    _refreshContents() {
+      this._appFolder=this.config.appFolder?(this._pins.getFolder(this.config.appFolder)??{name:this.config.name,apps:[]}):null;
+      if(this.config.autoIcon)this.icon.update();this.popup?._updateView();
     }
 
     _getGridIcons(fullPath) {
-      if (this._appFolder) return this._appFolder.apps.slice(0, 4).map(app => app.get_app_info().get_icon() ?? Gio.ThemedIcon.new("application-x-executable"));
+      if (this._appFolder) return [...this._appFolder.apps.slice(0,4).map(app=>app.get_app_info().get_icon()??Gio.ThemedIcon.new('application-x-executable')),
+        ...(this.config.children??[]).map(child=>Gio.ThemedIcon.new(child.icon??'folder'))].slice(0,4);
       let icons = [];
       try {
         let dir = Gio.File.new_for_path(fullPath);
@@ -628,7 +667,7 @@ const StackButton = GObject.registerClass(
           if (files.length >= 4) break;
         }
 
-        icons = [...files, ...folders].slice(0, 4);
+        icons = [...files, ...folders, ...(this.config.children??[]).filter(child=>child.appFolder).map(child=>Gio.ThemedIcon.new(child.icon??'folder'))].slice(0, 4);
       } catch (e) {
         console.warn(`[dash-stacks] auto-icon scan failed: ${e}`);
       }
@@ -1026,6 +1065,7 @@ const StackButton = GObject.registerClass(
     }
 
     _onDestroy() {
+      this._destroyed=true;
       if (this._capturedEventId) global.stage.disconnect(this._capturedEventId);
       if (this.popup) {
         this.popup.remove_all_transitions();
@@ -1066,7 +1106,9 @@ export default class DashStacksExtension extends Extension {
     this._buttons = [];
     this._stacksSignature = null;
     this._configSignals = [];
-    this._appFolderPins = new AppFolderPins(this._settings, () => this._injectStacks());
+    this._appFolderPins = new AppFolderPins(this._settings, () => {
+      this._injectStacks();this._buttons.forEach(item=>item._stackButton?._refreshContents());this._dock?.queueLayout();
+    });
     ["popup-width", "popup-height", "icon-size", "tooltip-delay"].forEach(
       (key) => {
         let sig = this._settings.connect(`changed::${key}`, () => {
@@ -1130,7 +1172,7 @@ export default class DashStacksExtension extends Extension {
       stacks.forEach((stack, index) => {
         if (stack.appFolder && folderIds.has(stack.appFolder)) return;
         if (stack.appFolder) folderIds.add(stack.appFolder);
-        if (stack.appFolder && !this._appFolderPins.getFolder(stack.appFolder)) return;
+        if (stack.appFolder && !this._appFolderPins.getFolder(stack.appFolder) && !stack.children?.length) return;
         const btn = new StackButton(stack, this._settings, index, this._appFolderPins);
         const item = new Dash.DashItemContainer();
         item._stackButton = btn;

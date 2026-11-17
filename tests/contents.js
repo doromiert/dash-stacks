@@ -1,0 +1,118 @@
+import Gio from 'gi://Gio';
+import Clutter from 'gi://Clutter';
+import GLib from 'gi://GLib';
+import Shell from 'gi://Shell';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+const delay=ms=>new Promise(resolve=>GLib.timeout_add(GLib.PRIORITY_DEFAULT,ms,()=>{resolve();return GLib.SOURCE_REMOVE;}));
+const assert=(condition,message)=>{if(!condition)throw new Error(message);};
+async function waitFor(condition,message,timeout=3000){const end=GLib.get_monotonic_time()+timeout*1000;while(!condition()){if(GLib.get_monotonic_time()>end)throw new Error(message);await delay(10);}}
+export async function runContents(extension){
+ const settings=extension.getSettings(),pins=extension._appFolderPins,view=Main.overview._overview.controls.appDisplay;
+ const folders=new Gio.Settings({schema_id:'org.gnome.desktop.app-folders'});
+ const savedStacks=settings.get_string('stacks'),savedFavorites=global.settings.get_strv('favorite-apps'),savedFolders=folders.get_strv('folder-children');
+ const base='/tmp/dash-stack-contents',alpha=base+'/Alpha',beta=base+'/Beta';
+ GLib.mkdir_with_parents(alpha,0o700);GLib.mkdir_with_parents(beta,0o700);
+ GLib.file_set_contents(beta+'/Original.txt','preserve original folder');
+ GLib.file_set_contents(alpha+'/Beta','preserve name collision');
+ const groupId='stack-contents-native';
+ const group=new Gio.Settings({schema_id:'org.gnome.desktop.app-folders.folder',path:`/org/gnome/desktop/app-folders/folders/${groupId}/`});
+ const textId='org.gnome.TextEditor.desktop',filesId='org.gnome.Nautilus.desktop';
+ const apps=Shell.AppSystem.get_default(),text=apps.lookup_app(textId),files=apps.lookup_app(filesId);
+ assert(text&&files,'fixture apps unavailable');
+ const nativeSource=Gio.File.new_for_path(text.get_app_info().get_filename());
+ const [,originalBytes]=nativeSource.load_contents(null);
+ const configs=()=>JSON.parse(settings.get_string('stacks'));
+ const buttons=()=>extension._buttons.filter(i=>i._stackButton).map(i=>i._stackButton);
+ const button=path=>buttons().find(b=>b.config.path===path);
+ const topHas=id=>view.getAllItems().some(item=>item.id===id);
+ const folderIcon=()=>view.getAllItems().find(item=>item.id===groupId);
+ const nestedItems=popup=>popup.grid.get_children().flatMap(row=>row.get_children()).filter(item=>item._stackConfig);
+ const pointer=global.stage.context.get_backend().get_default_seat().create_virtual_device(Clutter.InputDeviceType.POINTER_DEVICE);
+ const center=actor=>{const [x,y]=actor.get_transformed_position(),[w,h]=actor.get_transformed_size();return [x+w/2,y+h/2];};
+ const drag=async(source,target)=>{
+  const start=center(source);
+  pointer.notify_absolute_motion(GLib.get_monotonic_time(),...start);await delay(50);
+  pointer.notify_button(GLib.get_monotonic_time(),Clutter.BUTTON_PRIMARY,Clutter.ButtonState.PRESSED);await delay(60);
+  for(let step=1;step<=24;step++){const end=center(target);pointer.notify_absolute_motion(GLib.get_monotonic_time(),start[0]+(end[0]-start[0])*step/24,start[1]+(end[1]-start[1])*step/24);await delay(16);}
+  for(let step=0;step<5;step++){pointer.notify_absolute_motion(GLib.get_monotonic_time(),...center(target));await delay(30);}
+  pointer.notify_button(GLib.get_monotonic_time(),Clutter.BUTTON_PRIMARY,Clutter.ButtonState.RELEASED);await delay(250);
+ };
+ let feedbackMs;
+ try{
+  group.set_string('name','Original Group');group.set_strv('apps',[filesId]);group.set_strv('categories',[]);group.set_strv('excluded-apps',[]);
+  folders.set_strv('folder-children',[groupId]);
+  global.settings.set_strv('favorite-apps',['org.gnome.Calculator.desktop']);
+  settings.set_string('stacks',JSON.stringify([{name:'Alpha',path:alpha,icon:'folder',autoIcon:true},{name:'Beta',path:beta,icon:'folder',autoIcon:true}]));
+  await waitFor(()=>button(alpha)&&button(beta)&&topHas(textId)&&folderIcon(),'contents fixture did not settle');
+  const appIcon=view.getAllItems().find(item=>item.id===textId);
+  view.goToPage(view._grid.getItemPage(appIcon),false);await delay(200);
+  await drag(appIcon,button(alpha));
+  await waitFor(()=>pins.contents.hidden.has(textId)&&!topHas(textId),'physical app center drop failed');
+  Gio.File.new_for_path(alpha+'/'+textId).delete(null);
+  await waitFor(()=>topHas(textId),'physical drop deletion did not restore app');
+  const before=GLib.get_monotonic_time();
+  assert(button(alpha).acceptDrop({app:text},null,button(alpha).width/2),'app center drop rejected');
+  await waitFor(()=>pins.contents.hidden.has(textId)&&!topHas(textId),'dropped app did not leave grid',400);
+  feedbackMs=(GLib.get_monotonic_time()-before)/1000;
+  const launcher=Gio.File.new_for_path(alpha+'/'+textId);
+  assert(launcher.query_exists(null),'launcher file missing');
+  launcher.delete(null);
+  await waitFor(()=>!pins.contents.hidden.has(textId)&&topHas(textId),'deleted launcher did not restore grid',400);
+  await pins.add({app:text},button(alpha).config);await pins.add({app:text},button(beta).config);
+  await waitFor(()=>pins.contents.hidden.has(textId),'duplicate membership missing');
+  Gio.File.new_for_path(alpha+'/'+textId).delete(null);await delay(100);
+  assert(pins.contents.hidden.has(textId)&&!topHas(textId),'removing one duplicate restored app too early');
+  Gio.File.new_for_path(beta+'/'+textId).delete(null);
+  await waitFor(()=>topHas(textId),'last duplicate did not restore app');
+  nativeSource.copy(launcher,Gio.FileCopyFlags.NONE,null,null);
+  await waitFor(()=>!topHas(textId),'external desktop creation not tracked',400);
+  const renamed=Gio.File.new_for_path(alpha+'/renamed.txt');launcher.move(renamed,Gio.FileCopyFlags.NONE,null,null);
+  await waitFor(()=>topHas(textId),'desktop rename did not restore app',400);
+  renamed.delete(null);
+  await pins.add({app:files},button(alpha).config);
+  await waitFor(()=>pins.contents.hidden.has(filesId)&&!folderIcon(),'native folder child remained in app grid');
+  assert(JSON.stringify(group.get_strv('apps'))===JSON.stringify([filesId]),'native folder membership changed');
+  Gio.File.new_for_path(alpha+'/'+filesId).delete(null);
+  await waitFor(()=>folderIcon()?.view.getAllItems().some(item=>item.id===filesId),'original folder grouping not restored');
+  const from=button(beta),to=button(alpha);
+  await drag(from,to);
+  await waitFor(()=>configs().length===1&&configs()[0].children?.length===1,'directory nesting not persisted');
+  const nested=configs()[0].children[0],alias=Gio.File.new_for_path(nested.path);
+  assert(alias.query_info('standard::type',Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS,null).get_file_type()===Gio.FileType.SYMBOLIC_LINK,'nested folder was moved/copied rather than linked');
+  assert(nested.shortcutTarget===beta,'shortcut target changed');
+  assert(new TextDecoder().decode(GLib.file_get_contents(beta+'/Original.txt')[1])==='preserve original folder','original contents changed');
+  assert(new TextDecoder().decode(GLib.file_get_contents(alpha+'/Beta')[1])==='preserve name collision','existing collision overwritten');
+  button(alpha).emit('clicked',1);await waitFor(()=>nestedItems(button(alpha).popup??{grid:{get_children:()=>[]}}).some(i=>i._stackConfig.path===nested.path),'nested folder missing from shared popup');
+  const popup=button(alpha).popup;const nestedItem=nestedItems(popup).find(i=>i._stackConfig.path===nested.path);
+  nestedItem.emit('clicked',1);await waitFor(()=>popup.history.at(-1).path===nested.path&&popup.grid.get_n_children()>0,'nested navigation failed');
+  assert(button(alpha).popup===popup,'nested stack opened another popup family');
+  button(alpha)._closePopup();await delay(250);
+  files.get_app_info();
+  Gio.File.new_for_path(files.get_app_info().get_filename()).copy(Gio.File.new_for_path(beta+'/'+filesId),Gio.FileCopyFlags.NONE,null,null);
+  await waitFor(()=>pins.contents.hidden.has(filesId),'nested shortcut root not watched');
+  alias.delete(null);
+  await waitFor(()=>!pins.contents.hidden.has(filesId)&&folderIcon(),'deleting nested shortcut did not restore grid');
+  assert(Gio.File.new_for_path(beta+'/Original.txt').query_exists(null),'deleting shortcut deleted original folder');
+  Gio.File.new_for_path(beta+'/'+filesId).delete(null);
+  const nativeFolder=folderIcon();assert(nativeFolder,'native folder missing');
+  assert(button(alpha).acceptDrop(nativeFolder,null,button(alpha).width/2),'virtual folder nesting rejected');
+  await waitFor(()=>configs()[0].children.some(child=>child.appFolder===groupId)&&!folderIcon(),'virtual folder nesting failed');
+  button(alpha).emit('clicked',1);await waitFor(()=>button(alpha).popup&&nestedItems(button(alpha).popup).some(i=>i._stackConfig.appFolder===groupId),'nested virtual folder missing');
+  const virtualPopup=button(alpha).popup;const virtualItem=nestedItems(virtualPopup).find(i=>i._stackConfig.appFolder===groupId);
+  virtualItem.emit('clicked',1);
+  await waitFor(()=>virtualPopup.history.at(-1).appFolder===groupId&&virtualPopup.grid.get_n_children()>0,'virtual navigation failed');
+  assert(!virtualPopup.nautilusBtn.visible,'filesystem action visible for virtual folder');
+  await pins.add({app:text},virtualPopup.history.at(-1));
+  await waitFor(()=>group.get_strv('apps').includes(textId)&&pins.getFolder(groupId)?.apps.some(app=>app.get_id()===textId),'app not added to native virtual membership');
+  assert(!pins.canAdd(button(alpha),virtualPopup.history.at(-1)),'JSON nesting cycle accepted');
+  button(alpha)._closePopup();await delay(250);
+  let rejected=false;try{await pins.add({_folderPath:alpha},button(alpha).config);}catch{rejected=true;}
+  assert(rejected,'filesystem self nesting accepted');
+  assert(nativeSource.load_contents(null)[1].every((value,index)=>value===originalBytes[index]),'installed desktop file modified');
+  return {feedbackMs,drop:true,physicalAppDrop:true,physicalStackDrop:true,externalFiles:true,rename:true,duplicates:true,nativeGrouping:true,nestedShortcut:true,collision:true,originalPreserved:true,sharedPopup:true,virtualNested:true,cycleRejected:true};
+ }finally{
+  for(const b of buttons())if(b.popup)b._closePopup();
+  settings.set_string('stacks',savedStacks);global.settings.set_strv('favorite-apps',savedFavorites);folders.set_strv('folder-children',savedFolders);
+  await delay(200);
+ }
+}

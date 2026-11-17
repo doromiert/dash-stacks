@@ -1,3 +1,4 @@
+import {runContents} from './contents.js';
 import {runOverflow} from "./overflow.js";
 import Gio from 'gi://Gio';
 import Clutter from 'gi://Clutter';
@@ -134,7 +135,9 @@ export async function run(extension) {
     trace.push(['folder source',center(folderSource)]);
     folderSource._draggable.connect('drag-begin',()=>trace.push('folder begin'));
     folderSource._draggable.connect('drag-end',(_d,...args)=>trace.push(['folder end',...args]));
-    await drag(folderSource,center(buttons().find(i=>i.config.path)));
+    const edgeTarget=buttons().find(i=>i.config.path);
+    const [edgeX,edgeY]=edgeTarget.get_transformed_position();
+    await drag(folderSource,[edgeX+2,edgeY+edgeTarget.height/2]);
     assert(appButton() && !gridFolder(),'physical pointer drag-in failed: '+JSON.stringify(trace));
     global.settings.set_strv('favorite-apps',['org.gnome.Calculator.desktop']);
     await delay(600);
@@ -174,5 +177,6 @@ export async function run(extension) {
     context.scale_factor=scale;
     await delay(100);
     const overflow = await runOverflow(extension);
-    return {overflow,feedbackMs,size,directorySize,scaled,normalSize:normal.child.icon.get_size(),normalColor,stackColor,normalGap,stackGap,sharedStackModel:true,dragInOutReorder:true,physicalPointerDrag:true,migration:true,membersPreserved:true,lifecycle:true};
+    const contents=await runContents(extension);
+    return {contents,overflow,feedbackMs,size,directorySize,scaled,normalSize:normal.child.icon.get_size(),normalColor,stackColor,normalGap,stackGap,sharedStackModel:true,dragInOutReorder:true,physicalPointerDrag:true,migration:true,membersPreserved:true,lifecycle:true};
 }

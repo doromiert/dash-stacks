@@ -10,12 +10,15 @@ export class ScrollableDash {
     constructor(dash) {
         this.dash = dash;
         this._originalAdjust = dash._adjustIconSize;
+        this._backgroundStyle = dash._background.style;
+        this._dashStyle = dash.style;
         this._parent = dash._box.get_parent();
         this._showAppsParent = dash._showAppsIcon.get_parent();
         this._showAppsIndex = this._showAppsParent.get_children().indexOf(dash._showAppsIcon);
         this._itemSizes = new Map();
         this._buttonSizes = new Map();
         this._slotSizes = new Map();
+        this._scrollSamples = [];
         this._originalLayout = dash._box.layout_manager;
         // The native DashIconsLayout deliberately reports min-width=0, allowing
         // shrinking. A normal box gives StViewport the full scrollable extent.
@@ -42,6 +45,8 @@ export class ScrollableDash {
         this._addedId = dash._box.connect('child-added', () => this.queueLayout());
         this._removedId = dash._box.connect('child-removed', () => this.queueLayout());
         this._styleId = dash.connect('style-changed', () => this.queueLayout());
+        this._geometrySignals = [dash._showAppsIcon, dash._background].map(actor =>
+            [actor, actor.connect('notify::allocation', () => this.queueLayout())]);
         this._theme = St.ThemeContext.get_for_stage(global.stage);
         this._scaleId = this._theme.connect('notify::scale-factor', () => this.queueLayout());
         this._focusId = global.stage.connect('notify::key-focus', () => this._revealFocus());
@@ -55,6 +60,9 @@ export class ScrollableDash {
                 const type = this._pan.get_point_event(0)?.type();
                 return type === Clutter.EventType.TOUCH_BEGIN || type === Clutter.EventType.TOUCH_UPDATE;
             });
+            this._pan.connect('recognize', () => this._stopMomentum());
+            this._pan.connect('end', () => this._fling(-this._pan.get_velocity_abs().get_x() * this._direction));
+            this._pan.connect('cancel', () => this._stopMomentum());
             this._pan.connect('pan-update', () => {
                 this.scroll.hadjustment.value -= this._pan.get_delta_abs().get_x() * this._direction;
             });
@@ -77,6 +85,7 @@ export class ScrollableDash {
         if (sizes.has(actor)) return;
         const size = this._saveSize(actor);
         size.destroyId = actor.connect('destroy', () => sizes.delete(actor));
+        size.styleId = actor.connect('style-changed', () => this.queueLayout());
         sizes.set(actor, size);
     }
 
@@ -93,6 +102,11 @@ export class ScrollableDash {
         const dash = this.dash;
         const scale = this._theme.scale_factor;
         const items = [...dash._box.get_children(), dash._showAppsIcon];
+        const background = dash._background;
+        const outerStyle = `${this._dashStyle ? `${this._dashStyle};` : ''}padding-left: ${background.margin_bottom / scale}px; padding-right: ${background.margin_bottom / scale}px;`;
+        if (dash.style !== outerStyle) dash.style = outerStyle;
+        dash.ensure_style();
+        for (const item of items) {item.ensure_style();item.child?.ensure_style();item.child?._delegate?.icon?.ensure_style();}
         // Preserve the largest native size that fits vertically; item count and
         // available width must never shrink icons. Tiny HiDPI displays still fit.
         const showButton = dash._showAppsIcon.child;
@@ -102,7 +116,8 @@ export class ScrollableDash {
         const oldTextureSize = showIcon.iconSize * scale;
         showIcon.icon.set_size(oldTextureSize, oldTextureSize);
         const padding = showButton.get_preferred_height(-1)[1] - oldTextureSize;
-        const available = dash._maxHeight > 0 ? dash._maxHeight - padding : Infinity;
+        const backgroundPadding = background.get_theme_node().get_vertical_padding();
+        const available = dash._maxHeight > 0 ? dash._maxHeight - padding - backgroundPadding : Infinity;
         const iconSize = [16, 22, 24, 32, 48, 64].filter(size => size * scale <= available).at(-1) ?? 16;
         if (dash.iconSize !== iconSize) {
             dash.iconSize = iconSize;
@@ -149,6 +164,20 @@ export class ScrollableDash {
                 item.height = iconSize * scale;
         }
         const theme = dash.get_theme_node();
+        const backgroundHeight = Math.min(slot + backgroundPadding,
+            dash._maxHeight > 0 ? dash._maxHeight - background.margin_top - background.margin_bottom - theme.get_vertical_padding() : Infinity);
+        const verticalInset = Math.max(0, (backgroundHeight - slot) / 2);
+        const properItems = items.filter(item => item.child?._delegate?.icon);
+        const firstItem = properItems[0];
+        const firstIcon = firstItem.child._delegate.icon;
+        const measured = firstIcon.has_allocation() && showIcon.has_allocation() &&
+            Math.abs(showIcon.width - slot) < 0.5 && Math.abs(dash._showAppsIcon.width - buttonSlot) < 0.5;
+        const leftInset = measured ? firstIcon.get_transformed_position()[0] - firstItem.get_transformed_position()[0] : (buttonSlot-slot)/2;
+        const rightInset = measured ? dash._showAppsIcon.width - (showIcon.get_transformed_position()[0] - dash._showAppsIcon.get_transformed_position()[0]) - showIcon.width : (buttonSlot-slot)/2;
+        const leftPadding = Math.max(0, verticalInset - leftInset);
+        const rightPadding = Math.max(0, verticalInset - rightInset);
+        const backgroundStyle = `${this._backgroundStyle ? `${this._backgroundStyle};` : ''}padding-left: ${leftPadding / scale}px; padding-right: ${rightPadding / scale}px;`;
+        if (background.style !== backgroundStyle) background.style = backgroundStyle;
         const maxWidth = dash._maxWidth;
         if (maxWidth > 0) {
             const content = theme.get_content_box(new Clutter.ActorBox({
@@ -156,7 +185,7 @@ export class ScrollableDash {
             }));
             // CSS lengths are logical; _maxWidth and preferred widths are physical.
             const showWidth = dash._showAppsIcon.get_preferred_width(-1)[1];
-            const width = Math.max(slot, content.get_width() - showWidth);
+            const width = Math.max(slot, content.get_width() - showWidth - leftPadding - rightPadding);
             const style = `max-width: ${width / scale}px;`;
             if (this.scroll.style !== style) this.scroll.style = style;
         }
@@ -168,20 +197,58 @@ export class ScrollableDash {
     }
 
     _scrollEvent(event) {
+        if (event.type() === Clutter.EventType.TOUCH_BEGIN || event.type() === Clutter.EventType.BUTTON_PRESS)
+            this._stopMomentum();
         if (event.type() !== Clutter.EventType.SCROLL) return Clutter.EVENT_PROPAGATE;
         const adj = this.scroll.hadjustment;
         if (adj.upper <= adj.page_size) return Clutter.EVENT_PROPAGATE;
         const direction = event.get_scroll_direction();
         if (direction === Clutter.ScrollDirection.SMOOTH) {
             const [dx, dy] = event.get_scroll_delta();
+            const finger = event.get_scroll_source() === Clutter.ScrollSource.FINGER ||
+                event.get_source_device()?.get_device_type() === Clutter.InputDeviceType.TOUCHPAD_DEVICE;
+            const time = event.get_time();
+            if (finger && dx === 0 && dy === 0) {
+                const samples = this._scrollSamples.filter(sample => ((time-sample.time) >>> 0) <= 120);
+                this._scrollSamples = [];
+                if (samples.length > 1) {
+                    const first=samples[0],last=samples.at(-1),elapsed=(last.time-first.time) >>> 0;
+                    if(elapsed>0)this._fling((last.value-first.value)/elapsed);
+                }
+                return Clutter.EVENT_STOP;
+            }
+            adj.remove_transition('value');
+            if (!finger) this._scrollSamples = [];
             const delta = Math.abs(dx) > Math.abs(dy) ? dx * this._direction : dy;
             adj.adjust_for_scroll_event(delta);
+            if (finger) {
+                this._scrollSamples = this._scrollSamples.filter(sample => ((time-sample.time) >>> 0) <= 120);
+                this._scrollSamples.push({time,value:adj.value});
+            }
         } else {
+            this._stopMomentum();
             const backwards = direction === Clutter.ScrollDirection.UP || direction === Clutter.ScrollDirection.LEFT;
             const horizontal = direction === Clutter.ScrollDirection.LEFT || direction === Clutter.ScrollDirection.RIGHT;
             adj.value += (backwards ? -1 : 1) * (horizontal ? this._direction : 1) * 64 * this._theme.scale_factor;
         }
         return Clutter.EVENT_STOP;
+    }
+
+    _stopMomentum() {
+        this.scroll.hadjustment.remove_transition('value');
+        this._scrollSamples = [];
+    }
+
+    _fling(velocity) {
+        if (!Number.isFinite(velocity) || Math.abs(velocity) < 0.08 * this._theme.scale_factor || !St.Settings.get().enable_animations) return;
+        const adj = this.scroll.hadjustment;
+        const scale = this._theme.scale_factor;
+        velocity = Math.clamp(velocity, -4 * scale, 4 * scale);
+        let duration = Math.min(900, Math.max(120, Math.abs(velocity) / (0.004 * scale)));
+        const target = Math.clamp(adj.value + velocity * duration / 2, adj.lower, Math.max(adj.lower, adj.upper-adj.page_size));
+        duration = Math.min(duration, 2 * Math.abs(target-adj.value) / Math.abs(velocity));
+        if (duration < 1) return;
+        adj.ease(target, {duration, mode:Clutter.AnimationMode.EASE_OUT_QUAD});
     }
 
     _hideLabels() {
@@ -199,6 +266,7 @@ export class ScrollableDash {
     _revealFocus() {
         const focus = global.stage.key_focus;
         if (!focus || !this.dash._box.contains(focus) || !focus.has_allocation()) return;
+        this._stopMomentum();
         const [x] = focus.get_transformed_position();
         const [left] = this.scroll.get_transformed_position();
         const [width] = focus.get_transformed_size();
@@ -210,6 +278,7 @@ export class ScrollableDash {
     }
 
     _dragMotion(event) {
+        this._stopMomentum();
         const [x, y] = this.scroll.get_transformed_position();
         const edge = 24 * this._theme.scale_factor;
         this._dragDirection = event.y >= y && event.y <= y + this.scroll.height
@@ -232,6 +301,7 @@ export class ScrollableDash {
     }
 
     destroy() {
+        this._stopMomentum();
         this._stopDragScroll();
         if (this._layoutId) global.compositor.get_laters().remove(this._layoutId);
         DND.removeDragMonitor(this._dragMonitor);
@@ -241,13 +311,17 @@ export class ScrollableDash {
         this._theme.disconnect(this._scaleId);
         const dash = this.dash;
         dash.disconnect(this._styleId);
+        this._geometrySignals.forEach(([actor,id]) => actor.disconnect(id));
         dash._box.disconnect(this._addedId);
         dash._box.disconnect(this._removedId);
         dash._adjustIconSize = this._originalAdjust;
+        dash._background.style = this._backgroundStyle;
+        dash.style = this._dashStyle;
         for (const sizes of [this._itemSizes, this._buttonSizes, this._slotSizes]) {
             for (const [actor, size] of sizes) {
-                const {destroyId, ...properties} = size;
+                const {destroyId, styleId, ...properties} = size;
                 actor.disconnect(destroyId);
+                actor.disconnect(styleId);
                 actor.set(properties);
             }
             sizes.clear();

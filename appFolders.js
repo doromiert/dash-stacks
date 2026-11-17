@@ -1,3 +1,5 @@
+import {StackContents, allStacks, stackKey, stackPath, copyLauncher, linkDirectory, removeFile} from './stackContents.js';
+import * as AppFavorites from 'resource:///org/gnome/shell/ui/appFavorites.js';
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -22,12 +24,15 @@ export class AppFolderPins {
         this._folderWatches = new Map();
         this._folderData = new Map();
         this._injections = new InjectionManager();
+        this._jobs = new Set();
+        this._disposed = false;
+        this.contents = new StackContents(redisplay => this._queueRefresh(redisplay));
         this._migratePins();
         const pins = this;
         this._injections.overrideMethod(AppDisplay.AppDisplay.prototype, '_loadApps', original => function (...args) {
             const items = original.apply(this, args);
-            const pinned = new Set(pins._stacks().map(stack => stack.appFolder).filter(Boolean));
-            const hidden = items.filter(item => item instanceof AppDisplay.FolderIcon && pinned.has(item.id));
+            const pinned = new Set(allStacks(pins._stacks()).map(stack => stack.appFolder).filter(Boolean));
+            const hidden = items.filter(item => item instanceof AppDisplay.FolderIcon && (pinned.has(item.id) || item.view.getAllItems().length===0));
             pins._folderData.clear();
             this._folderIcons = this._folderIcons.filter(icon => !hidden.includes(icon));
             for (const icon of hidden) {
@@ -35,10 +40,27 @@ export class AppFolderPins {
                 if (this._items.get(icon.id) !== icon) icon.destroy();
             }
             return items.filter(item => {
-                if (hidden.includes(item)) return false;
+                if(hidden.includes(item))return false;
+                if(item.app&&pins.contents.hidden.has(item.app.get_id())){
+                    if(this._items.get(item.id)!==item)item.destroy();
+                    return false;
+                }
                 if (item instanceof AppDisplay.FolderIcon) pins._addMenu(item);
                 return true;
             });
+        });
+        this._injections.overrideMethod(AppDisplay.FolderView.prototype, '_loadApps', original => function (...args) {
+            const items=original.apply(this,args);
+            const id=this._id;
+            if(allStacks(pins._stacks()).some(stack=>stack.appFolder===id))return items;
+            return items.filter(item=>{
+                if(!item.app||!pins.contents.hidden.has(item.app.get_id()))return true;
+                if(this._items.get(item.id)!==item)item.destroy();
+                return false;
+            });
+        });
+        this._injections.overrideMethod(Dash.Dash, 'getAppFromSource', original => function (source) {
+            return source?._stackApp ?? original.call(this,source);
         });
         for (const method of ['handleDragOver', 'acceptDrop']) {
             this._injections.overrideMethod(Dash.Dash.prototype, method, original => function (source, ...args) {
@@ -52,9 +74,8 @@ export class AppFolderPins {
         this._injections.overrideMethod(AppDisplay.AppDisplay.prototype, 'acceptDrop', original => function (source, ...args) {
             if (!source?._dashStack) return original.call(this, source, ...args);
             if (!pins._settings.is_writable('stacks')) return false;
-            const stacks = pins._stacks();
-            stacks.splice(source._index, 1);
-            return pins._settings.set_string('stacks', JSON.stringify(stacks));
+            pins.removeStack(source).catch(error=>Main.notifyError('Could not remove stack',error.message));
+            return true;
         });
         this._settingsId = settings.connect('changed::stacks', () => this._queueRefresh());
         this._foldersId = this._folders.connect('changed::folder-children', () => this._queueRefresh());
@@ -94,34 +115,109 @@ export class AppFolderPins {
         return this._settings.set_string('stacks', JSON.stringify(stacks));
     }
 
-    accepts(source) {
-        return this._settings.is_writable('stacks') &&
-            (source instanceof AppDisplay.FolderIcon || !!source?._dashStack || !!source?._folderPath);
+    descriptor(source) {
+        if(source?._stackConfig)return source._stackConfig;
+        if(source?._dashStack)return source.config;
+        if(source instanceof AppDisplay.FolderIcon)return {name:source.name,appFolder:source.id,icon:'folder',autoIcon:true};
+        if(source?._folderPath)return {name:GLib.path_get_basename(source._folderPath),path:source._folderPath,icon:'folder',autoIcon:false};
+        return null;
     }
-
-    drop(source, position = this._stacks().length) {
-        if (!this.accepts(source)) return false;
-        const stacks = this._stacks();
-        const id = source instanceof AppDisplay.FolderIcon ? source.id : source.config?.appFolder;
-        const old = source._dashStack ? source._index : stacks.findIndex(stack =>
-            source._folderPath ? stack.path === source._folderPath : stack.appFolder === id);
-        let entry;
-        if (old >= 0) {
-            [entry] = stacks.splice(old, 1);
-            if (old < position) position--;
-        } else {
-            entry = source._folderPath
-                ? {name: GLib.path_get_basename(source._folderPath), path: source._folderPath, icon: 'folder', autoIcon: false}
-                : {name: source.name, appFolder: id, icon: 'folder', autoIcon: true};
+    find(stacks,key) {
+        for(let index=0;index<stacks.length;index++){
+            if(stackKey(stacks[index])===key)return {list:stacks,index,stack:stacks[index]};
+            const child=this.find(stacks[index].children??[],key);if(child)return child;
         }
-        stacks.splice(Math.max(0, Math.min(position, stacks.length)), 0, entry);
-        return this._settings.set_string('stacks', JSON.stringify(stacks));
+        return null;
+    }
+    accepts(source) { return this._settings.is_writable('stacks') && !!this.descriptor(source); }
+    drop(source, position = this._stacks().length) {
+        if(!this.accepts(source))return false;
+        this._promote(source,position).catch(error=>Main.notifyError('Could not pin stack',error.message));
+        return true;
+    }
+    async _removeShortcut(stack) {
+        if(!stack.shortcutTarget)return;
+        const file=Gio.File.new_for_path(stackPath(stack));
+        let info;
+        try{info=await new Promise((resolve,reject)=>file.query_info_async('standard::type,standard::symlink-target',Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS,GLib.PRIORITY_DEFAULT,null,(f,r)=>{try{resolve(f.query_info_finish(r));}catch(e){reject(e);}}));}
+        catch(error){if(error.matches(Gio.IOErrorEnum,Gio.IOErrorEnum.NOT_FOUND))return;throw error;}
+        if(info.get_file_type()===Gio.FileType.SYMBOLIC_LINK&&info.get_symlink_target()===stack.shortcutTarget)await removeFile(file);
+    }
+    _relocate(stack,from,to) {
+        const entry={...stack};
+        const path=stackPath(entry);
+        if(path&&(path===from||path.startsWith(from+'/')))entry.path=to+path.slice(from.length);
+        if(entry.children)entry.children=entry.children.map(child=>this._relocate(child,from,to));
+        return entry;
+    }
+    async _promote(source,position) {
+        const descriptor=this.descriptor(source);
+        if(this._disposed)return;
+        const stacks=this._stacks(),found=this.find(stacks,stackKey(descriptor));
+        let entry=found?found.list.splice(found.index,1)[0]:{...descriptor};
+        if(found?.list===stacks&&found.index<position)position--;
+        if(entry.shortcutTarget){entry=this._relocate(entry,stackPath(entry),entry.shortcutTarget);delete entry.shortcutTarget;}
+        stacks.splice(Math.max(0,Math.min(position,stacks.length)),0,entry);
+        if(!this._settings.set_string('stacks',JSON.stringify(stacks)))throw new Error('Stack settings are locked');
+        await this._removeShortcut(descriptor);
+    }
+    async removeStack(source) {
+        const descriptor=this.descriptor(source);
+        if(this._disposed)return;
+        const stacks=this._stacks(),found=this.find(stacks,stackKey(descriptor));
+        if(!found)return;
+        found.list.splice(found.index,1);
+        if(!this._settings.set_string('stacks',JSON.stringify(stacks)))throw new Error('Stack settings are locked');
+        await this._removeShortcut(descriptor);
+    }
+    canAdd(source,target) {
+        if(this._disposed||!this._settings.is_writable('stacks')||!this.find(this._stacks(),stackKey(target)))return false;
+        if(source?.app||source?._stackApp)return true;
+        const descriptor=this.descriptor(source);
+        return !!descriptor&&!allStacks([descriptor]).some(stack=>stackKey(stack)===stackKey(target));
+    }
+    async add(source,target) {
+        if(!this.canAdd(source,target))throw new Error('A stack cannot contain itself');
+        const cancel=new Gio.Cancellable();this._jobs.add(cancel);
+        let created;
+        try {
+            const app=source.app??source._stackApp;
+            if(app){
+                if(target.appFolder){
+                    const folder=new Gio.Settings({schema_id:'org.gnome.desktop.app-folders.folder',path:`${this._folders.path}folders/${target.appFolder}/`});
+                    folder.set_strv('excluded-apps',folder.get_strv('excluded-apps').filter(id=>id!==app.get_id()));
+                    folder.set_strv('apps',[...new Set([...folder.get_strv('apps'),app.get_id()])]);
+                }else created=await copyLauncher(app,Gio.File.new_for_path(stackPath(target)),cancel);
+                if(this._disposed||!this.find(this._stacks(),stackKey(target)))throw new Error('The destination stack was removed');
+                if(AppFavorites.getAppFavorites().isFavorite(app.get_id()))AppFavorites.getAppFavorites().removeFavorite(app.get_id());
+            }else{
+                const descriptor=this.descriptor(source);
+                let entry={...descriptor};
+                if(target.path&&descriptor.path){
+                    const shortcut=await linkDirectory(stackPath(descriptor),Gio.File.new_for_path(stackPath(target)),descriptor.name,cancel);
+                    created=shortcut.file;entry={...this._relocate(descriptor,stackPath(descriptor),created.get_path()),shortcutTarget:shortcut.target};
+                }
+                if(this._disposed)throw new Error('Stack operation cancelled');
+                const stacks=this._stacks(),destination=this.find(stacks,stackKey(target));
+                if(!destination)throw new Error('The destination stack was removed');
+                const old=this.find(stacks,stackKey(descriptor));
+                if(old)old.list.splice(old.index,1);
+                destination.stack.children??=[];destination.stack.children.push(entry);
+                if(!this._settings.set_string('stacks',JSON.stringify(stacks)))throw new Error('Stack settings are locked');
+                created=null; // settings now own the new shortcut; cleanup cannot roll it back
+                await this._removeShortcut(descriptor);
+            }
+            this.contents.rescan();this._queueRefresh();
+        }catch(error){if(created)try{await removeFile(created);}catch{}throw error;}
+        finally{this._jobs.delete(cancel);}
     }
 
     getFolder(id) { return this._folderData.get(id); }
 
     _syncWatches() {
-        const ids = new Set(this._stacks().map(stack => stack.appFolder).filter(Boolean));
+        const stacks=this._stacks();
+        this.contents.sync(stacks);
+        const ids = new Set(allStacks(stacks).map(stack => stack.appFolder).filter(Boolean));
         for (const [id, {settings, signal}] of this._folderWatches) {
             if (!ids.has(id)) {
                 settings.disconnect(signal);
@@ -205,6 +301,9 @@ export class AppFolderPins {
     }
 
     destroy() {
+        this._disposed=true;
+        for(const job of this._jobs)job.cancel();
+        this.contents.destroy();
         if (this._idleId) GLib.source_remove(this._idleId);
         this._settings.disconnect(this._settingsId);
         this._folders.disconnect(this._foldersId);

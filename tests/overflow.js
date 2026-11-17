@@ -18,6 +18,17 @@ export async function runOverflow(extension) {
         try { await new Shell.Screenshot().screenshot(false, stream); }
         finally { stream.close(null); }
     };
+    const settleGeometry = async () => {
+        let previous, stable=0;
+        const deadline=GLib.get_monotonic_time()+2_000_000;
+        while(stable<3){
+            await delay(40);
+            const actors=[dash,dash._background,...dash._box.get_children(),dash._showAppsIcon,dash._showAppsIcon.icon];
+            const geometry=JSON.stringify(actors.map(actor=>[...actor.get_transformed_position(),...actor.get_transformed_size()]));
+            stable=geometry===previous&&!extension._dock._layoutId?stable+1:0;previous=geometry;
+            assert(GLib.get_monotonic_time()<deadline,'dock allocations did not settle');
+        }
+    };
     const checkTiles = () => {
         const items = [...dash._box.get_children(), dash._showAppsIcon].filter(i => i.child?._delegate?.icon);
         const bounds = items.map(i => i.get_size());
@@ -35,7 +46,20 @@ export async function runOverflow(extension) {
             const limit = dash.iconSize*context.scale_factor;
             assert(w <= limit && h <= limit, `stack artwork escaped tile ${w}/${h}/${limit}`);
         }
-        samples.push({scale:context.scale_factor, tiles: sizes.length, size:sizes[0], iconSize:dash.iconSize});
+        const [bx,by] = dash._background.get_transformed_position();
+        const [bw,bh] = dash._background.get_transformed_size();
+        const [fx,fy] = icons[0].get_transformed_position();
+        const [lastX,lastY] = dash._showAppsIcon.icon.get_transformed_position();
+        const vertical = lastY-by;
+        const right = bx+bw-lastX-sizes.at(-1)[0];
+        assert(Math.abs(right-vertical)<1, `right/vertical padding differ ${right}/${vertical}: ${JSON.stringify({style:dash._background.style,dashStyle:dash.style,background:[bx,by,bw,bh],last:[lastX,lastY,...sizes.at(-1)],maxH:dash._maxHeight,scale:context.scale_factor})}`);
+        if (extension._dock.scroll.hadjustment.value < 0.1)
+            assert(Math.abs(fx-bx-vertical)<1, `left/vertical padding differ ${fx-bx}/${vertical}`);
+        const [dashX,dashY]=dash.get_transformed_position(),[dashW,dashH]=dash.get_transformed_size();
+        const outer={left:bx-dashX,right:dashX+dashW-bx-bw,bottom:dashY+dashH-by-bh};
+        if(extension._dock.scroll.hadjustment.upper>extension._dock.scroll.hadjustment.page_size+1)
+            assert(Math.abs(outer.left-outer.bottom)<1&&Math.abs(outer.right-outer.bottom)<1, 'outer dock gaps differ '+JSON.stringify(outer));
+        samples.push({scale:context.scale_factor, tiles: sizes.length, size:sizes[0], iconSize:dash.iconSize,padding:{left:fx-bx,right,vertical,outer}});
     };
     const started = GLib.get_monotonic_time();
     settings.set_string('stacks', JSON.stringify(Array.from({length:24}, (_,i) => ({name:`Folder ${i+1}`,path:'/tmp',icon:'folder',autoIcon:i===1}))));
@@ -76,9 +100,24 @@ export async function runOverflow(extension) {
         touch.notify_touch_motion(GLib.get_monotonic_time(),0,x+scroll.width/2-step*12,y+scroll.height/2);
     }
     touch.notify_touch_up(GLib.get_monotonic_time(),0);
-    await delay(60);
+    await delay(20);
+    const touchRelease=adj.value;
+    await delay(100);
+    assert(adj.value>touchRelease+1,'touch kinetic scrolling stopped on release');
     assert(adj.value > beforeTouch, 'physical touch swipe did not scroll: '+JSON.stringify({beforeTouch,after:adj.value,upper:adj.upper,page:adj.page_size,trace:touchTrace,state:dock._pan.get_state(),pick:String(global.stage.get_actor_at_pos(Clutter.PickMode.REACTIVE,x+scroll.width/2,y+scroll.height/2))}));
     assert(!extension._buttons.some(i=>i._stackButton?.popup), 'swipe activated a stack');
+    dock._stopMomentum();adj.value=0;
+    for(let step=0;step<6;step++){
+        pointer.notify_scroll_continuous(GLib.get_monotonic_time(),0.2,0,Clutter.ScrollSource.FINGER,Clutter.ScrollFinishFlags.NONE);
+        await delay(16);
+    }
+    pointer.notify_scroll_continuous(GLib.get_monotonic_time(),0,0,Clutter.ScrollSource.FINGER,Clutter.ScrollFinishFlags.HORIZONTAL);
+    await delay(20);const padRelease=adj.value;
+    await delay(100);assert(adj.value>padRelease+1,'trackpad kinetic scrolling stopped on release');
+    pointer.notify_discrete_scroll(GLib.get_monotonic_time(),Clutter.ScrollDirection.UP,Clutter.ScrollSource.WHEEL);
+    await delay(30);const interrupted=adj.value;
+    await delay(100);assert(Math.abs(adj.value-interrupted)<1,'new wheel input did not interrupt kinetic scrolling');
+    dock._stopMomentum();
     adj.value=(adj.upper-adj.page_size)/2;
     await delay(60);
     await snapshot('middle');
@@ -98,10 +137,12 @@ export async function runOverflow(extension) {
     assert(adj.value < beforeDrag, 'drag edge did not scroll');
     context.scale_factor=2;
     await delay(180);
+    await settleGeometry();
     await snapshot('scale2');
     checkTiles();
     context.scale_factor=scale;
     await delay(180);
+    await settleGeometry();
     checkTiles();
     settings.set_string('stacks', original);
     await delay(180);
@@ -115,5 +156,5 @@ export async function runOverflow(extension) {
     extension.enable();
     await delay(180);
     checkTiles();
-    return {feedbackMs,samples,wheel:true,touchpad:true,touch:true,keyboard:true,dragEdge:true,nativeFade:true,lifecycle:true};
+    return {feedbackMs,samples,kineticTouch:true,kineticTrackpad:true,interrupt:true,wheel:true,touchpad:true,touch:true,keyboard:true,dragEdge:true,nativeFade:true,lifecycle:true};
 }
