@@ -13,6 +13,28 @@ scrolling glide after release and stop on fresh input; reduced motion is respect
 Inside padding and outside horizontal limits follow the vertical spacing.
 
 
+## Drag files into apps
+
+Drag a file beyond the stack popup to close Overview and continue the same
+held-button drag into an application. Apps receive a normal `text/uri-list`
+file drop, including correctly escaped spaces and Unicode filenames. Escape
+cancels the drag. The source file stays in place; the target receives a copy
+operation. App launchers, nested stacks and folders keep their dock pinning
+and Shell drag behavior.
+
+The Nix package includes a small GTK 3/Xwayland drag source. Shell's own drag
+actors cannot export file data to application windows; Mutter bridges the
+helper's native XDND offer to Wayland and X11 apps. The helper handles fractional-scale and stale-proxy cases in Mutter without a
+compositor patch. It does not replace the clipboard or replay mouse presses. It is stopped when the extension is
+disabled. Manual installations need the packaged `native-drag-helper` wrapper
+for cross-app file drops; existing Shell drags remain available without it.
+
+`tests/nativeDrag.js` exercises real mouse gestures and a separate GTK receiver
+at normal and fractional display scales, repeated transfers, URI escaping,
+Escape, early release, rejected drops and extension disable with a stopped
+helper. A Shell heartbeat checks that feedback and input stay under 400 ms. Run it in an isolated GNOME
+session with a temporary HOME, using `tests/nativeDropTarget.py` as the receiver.
+
 ## Pin app-grid folders
 
 Right-click an app folder and choose **Pin to Dock**, or drag it into the dock.

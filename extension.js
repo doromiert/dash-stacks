@@ -1,4 +1,5 @@
 import {stackPath,stackKey} from './stackContents.js';
+import { NativeFileDrag } from './nativeDrag.js';
 import Shell from 'gi://Shell';
 import { AppFolderPins } from "./appFolders.js";
 import { ScrollableDash } from "./scrollableDash.js";
@@ -216,6 +217,7 @@ const StackItem = GObject.registerClass(
         Main.overview.beginItemDrag(this);
       });
       draggable.connect("drag-end", () => Main.overview.endItemDrag(this));
+      popupRef.sourceActor._nativeDrag.watch(this, popupRef, draggable);
     }
     handleDragOver(source) {
       const accepts=this._stackConfig&&source!==this&&!this._pendingDrop&&this._pins.canAdd(source,this._stackConfig);
@@ -1098,6 +1100,7 @@ export default class DashStacksExtension extends Extension {
   enable() {
     if (this._settings) return;
     this._settings = this.getSettings();
+    this._nativeDrag = new NativeFileDrag(this.path);
 
     const syncConfig = () => {
       CONFIG.popupWidth = this._settings.get_int("popup-width");
@@ -1180,6 +1183,7 @@ export default class DashStacksExtension extends Extension {
         if (stack.appFolder) folderIds.add(stack.appFolder);
         if (stack.appFolder && !this._appFolderPins.getFolder(stack.appFolder) && !stack.children?.length) return;
         const btn = new StackButton(stack, this._settings, index, this._appFolderPins);
+        btn._nativeDrag = this._nativeDrag;
         const item = new Dash.DashItemContainer();
         item._stackButton = btn;
         btn._dashItem = item;
@@ -1230,6 +1234,8 @@ export default class DashStacksExtension extends Extension {
   }
 
   disable() {
+    this._nativeDrag?.destroy();
+    this._nativeDrag = null;
     for (const key of ["_layoutIdleId"]) {
       if (this[key]) GLib.source_remove(this[key]);
       this[key] = null;
