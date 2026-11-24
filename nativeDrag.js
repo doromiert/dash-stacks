@@ -103,7 +103,7 @@ export class NativeFileDrag {
 
     watch(item, popup, draggable) {
         // App/stack pins keep their existing Shell drag-and-drop semantics.
-        if (item._stackApp || item._stackConfig || item._folderPath)
+        if (item._stackApp || item._stackConfig)
             return;
         let monitor = null;
         const remove = () => {

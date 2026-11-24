@@ -15,12 +15,12 @@ Inside padding and outside horizontal limits follow the vertical spacing.
 
 ## Drag files into apps
 
-Drag a file beyond the stack popup to close Overview and continue the same
+Drag a file or directory beyond the stack popup to close Overview and continue the same
 held-button drag into an application. Apps receive a normal `text/uri-list`
 file drop, including correctly escaped spaces and Unicode filenames. Escape
 cancels the drag. The source file stays in place; the target receives a copy
-operation. App launchers, nested stacks and folders keep their dock pinning
-and Shell drag behavior.
+operation. App launchers and nested stacks keep their dock pinning and Shell drag behavior.
+Dragging leaves the original tile in place, preserving the popup grid layout.
 
 The Nix package includes a small GTK 3/Xwayland drag source. Shell's own drag
 actors cannot export file data to application windows; Mutter bridges the
@@ -41,8 +41,7 @@ Right-click an app folder and choose **Pin to Dock**, or drag it into the dock.
 App folders use the same stack popup, icon picker and **Show Folder Contents**
 preview toggle as directory stacks. Right-click **Unpin from Dock**, or drag the
 stack back to the app grid, to restore it. Drag stacks to reorder them; dragging
-back out never deletes folder contents. You can also pin a subfolder from an
-existing directory stack popup by dragging it into the dock.
+back out never deletes folder contents.
 
 App-folder entries live in the existing `stacks` setting with an `appFolder` ID
 in place of `path`. The earlier separate pin list is migrated automatically.

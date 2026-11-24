@@ -2,7 +2,7 @@
 let python = python3.withPackages (ps: [ ps.pygobject3 ps.pycairo ps.xlib ]);
 in stdenvNoCC.mkDerivation {
   pname = "dash-stacks";
-  version = "0-unstable-2026-11-24";
+  version = "0-unstable-2026-11-24.1";
   src = lib.cleanSource ./.;
   nativeBuildInputs = [ glib gobject-introspection makeWrapper wrapGAppsHook3 ];
   buildInputs = [ gtk3 ];

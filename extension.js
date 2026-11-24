@@ -152,6 +152,7 @@ const StackItem = GObject.registerClass(
         y_align: Clutter.ActorAlign.CENTER,
       });
       iconBin.add_child(icon);
+      this._dragIcon = icon;
 
       if (isDownloading) {
         let overlay = new St.Bin({
@@ -219,6 +220,8 @@ const StackItem = GObject.registerClass(
       draggable.connect("drag-end", () => Main.overview.endItemDrag(this));
       popupRef.sourceActor._nativeDrag.watch(this, popupRef, draggable);
     }
+    getDragActor() { return new Clutter.Clone({source: this._dragIcon}); }
+    getDragActorSource() { return this._dragIcon; }
     handleDragOver(source) {
       const accepts=this._stackConfig&&source!==this&&!this._pendingDrop&&this._pins.canAdd(source,this._stackConfig);
       this._pins.highlightDrop(accepts?this:null);

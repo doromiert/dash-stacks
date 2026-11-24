@@ -13,7 +13,7 @@ async function waitFor(condition, message, timeout = 3000) {
         await delay(20);
     }
 }
-export async function runNativeDrag(extension, {root, python, typelibPath, scale = 1, backend = 'wayland'}) {
+export async function runNativeDrag(extension, {root, python, typelibPath, scale = 1, backend = 'wayland', directoryItem = false}) {
     const call = (method, parameters) => new Promise((resolve, reject) =>
         Gio.DBus.session.call('org.gnome.Mutter.DisplayConfig', '/org/gnome/Mutter/DisplayConfig',
             'org.gnome.Mutter.DisplayConfig', method, parameters, null, Gio.DBusCallFlags.NONE, -1, null,
@@ -27,10 +27,14 @@ export async function runNativeDrag(extension, {root, python, typelibPath, scale
     const hotCorners = interfaceSettings.get_boolean('enable-hot-corners');
     interfaceSettings.set_boolean('enable-hot-corners', false);
     const settings = extension.getSettings(), saved = settings.get_string('stacks');
-    const directory = `${root}/files`;
+    const directory = `${root}/${directoryItem ? "directory-fixture" : "file-fixture"}`;
     GLib.mkdir_with_parents(directory, 0o700);
-    const path = `${directory}/hello space #é.txt`;
-    GLib.file_set_contents(path, 'Native file drag fixture.\n');
+    const path = `${directory}/${directoryItem ? 'folder space #é' : 'hello space #é.txt'}`;
+    if (directoryItem) {
+        GLib.mkdir_with_parents(path, 0o700);
+        GLib.file_set_contents(`${path}/keep.txt`, 'Preserve directory contents.\n');
+    } else GLib.file_set_contents(path, 'Native file drag fixture.\n');
+    for (let n = 0; n < 2; n++) GLib.file_set_contents(`${directory}/neighbor-${n}.txt`, 'Neighbor');
     const dropFile = Gio.File.new_for_path(`${root}/drop.json`);
     const removeDrop = () => {try {dropFile.delete(null);} catch {}};
     const launcher = new Gio.SubprocessLauncher({flags: Gio.SubprocessFlags.NONE});
@@ -68,10 +72,18 @@ export async function runNativeDrag(extension, {root, python, typelibPath, scale
             const popup = stack.popup;
             await waitFor(() => popup.grid.get_children().some(row => row.get_children().some(item => item.path === path)), 'file missing');
             const item = popup.grid.get_children().flatMap(row => row.get_children()).find(item => item.path === path);
+            const tiles = popup.grid.get_children().flatMap(row => row.get_children());
+            const geometry = tiles.map(tile => [...tile.get_transformed_position(), ...tile.get_transformed_size()]);
+            const parent = item.get_parent();
             const [x, y] = center(item);
             motion(x, y); await delay(80); motion(x, y); await delay(50);
+            const picked=global.stage.get_actor_at_pos(Clutter.PickMode.REACTIVE,x,y);
+            assert(item.contains(picked)||picked===item,'wrong picked actor '+String(picked)+' expected '+String(item));
             button(true); await delay(60); motion(x, y - 20); await delay(80);
+            assert(extension._nativeDrag._preparedItem===item,'drag did not begin '+JSON.stringify({ready:extension._nativeDrag._ready,folder:item._folderPath,stack:item._stackConfig,app:!!item._stackApp}));
             assert(Main.overview.visible && !extension._nativeDrag._active, 'drag inside popup closed Overview');
+            assert(item.get_parent() === parent, 'drag reparented the grid tile');
+            assert(JSON.stringify(tiles.map(tile => [...tile.get_transformed_position(), ...tile.get_transformed_size()])) === JSON.stringify(geometry), 'drag shifted popup tile bounds');
             const [, py] = popup.get_transformed_position();
             const began = GLib.get_monotonic_time();
             motion(x, py - 8);
@@ -128,9 +140,10 @@ export async function runNativeDrag(extension, {root, python, typelibPath, scale
         assert(!global.stage.get_grab_actor(), 'disable left Shell grabbed');
         extension.enable();
         assert(GLib.file_test(path, GLib.FileTest.EXISTS), 'source file was removed');
+        if (directoryItem) assert(GLib.file_test(`${path}/keep.txt`, GLib.FileTest.EXISTS), 'directory contents were removed');
         assert(maxHeartbeatMs < 400, `Shell heartbeat stalled for ${maxHeartbeatMs} ms`);
         assert(feedbackMs < 400, `handoff feedback took ${feedbackMs} ms`);
-        return {backend, scale, repeatedDrops: 2, escape: true, earlyRelease: true, rejectedDrop: true, stalledHelperCleanup: true, feedbackMs, maxHeartbeatMs};
+        return {backend, scale, directoryItem, stableGrid: true, repeatedDrops: 2, escape: true, earlyRelease: true, rejectedDrop: true, stalledHelperCleanup: true, feedbackMs, maxHeartbeatMs};
     } finally {
         GLib.source_remove(heartbeat);
         button(false);
